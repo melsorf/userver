@@ -1,7 +1,10 @@
 #include "task_processor.hpp"
 
+#ifdef __linux__
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#endif  // __linux__
+
 #include <sys/types.h>
 #include <csignal>
 
@@ -95,8 +98,15 @@ auto MakeTaskQueue(TaskProcessorConfig config) {
     UINVARIANT(false, "Unexpected value of TaskQueueType enum");
 }
 
-bool PlatformSupportsEpollet() { return utils::IsLinux() && utils::GetKernelVersion() >= utils::KernelVersion{5, 1}; }
+bool PlatformSupportsEpollet() {
+#ifdef __linux__
+    return true;
+#else   // __linux__
+    return false;
+#endif  // __linux__
+}
 
+#ifdef __linux__
 int CreateEpollFd() {
     int fd = epoll_create1(0);
     if (fd == -1) {
@@ -112,6 +122,7 @@ int CreateEventFd() {
     }
     return fd;
 }
+#endif  // __linux__
 
 }  // namespace
 
@@ -126,6 +137,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
         if (!use_ev_thread_pool_) {
+#ifdef __linux__
             epoll_fd_ = CreateEpollFd();
             event_fd_ = CreateEventFd();
 
@@ -135,6 +147,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
                 throw std::runtime_error("Failed to add eventfd to epoll");
             }
+#endif  // __linux__
         }
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
@@ -145,7 +158,9 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                 if (use_ev_thread_pool_) {
                     ProcessTasks();
                 } else {
+#ifdef __linux__
                     RunEventLoop();
+#endif  // __linux__
                 }
                 FinalizeWorkerThread();
             });
@@ -206,9 +221,11 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     if (use_ev_thread_pool_) {
         return;
     }
+#ifdef __linux__
     // Write to event_fd_ to wake up the worker thread
     uint64_t value = 1;
     (void)write(event_fd_, &value, sizeof(value));
+#endif  // __linux__
 }
 
 void TaskProcessor::Adopt(impl::TaskContext& context) { detached_contexts_->Add(context); }
@@ -474,6 +491,7 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
     return new_overload_by_length;
 }
 
+#ifdef __linux__
 void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return;
     struct epoll_event ev;
@@ -542,6 +560,7 @@ void TaskProcessor::RunEventLoop() {
         }
     }
 }
+#endif  // __linux__
 
 }  // namespace engine
 

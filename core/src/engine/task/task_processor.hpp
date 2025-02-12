@@ -104,11 +104,13 @@ private:
     OverloadByLength ComputeOverloadByLength(OverloadByLength old_overload_by_length, std::size_t max_queue_length)
         noexcept;
 
+#ifdef __linux__
     void RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
 
     void UnregisterFd(int fd);
 
     void RunEventLoop();
+#endif  // __linux__
 
     concurrent::impl::InterferenceShield<impl::DetachedTasksSyncBlock> detached_contexts_{
         impl::DetachedTasksSyncBlock::StopMode::kCancel
@@ -134,11 +136,13 @@ private:
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
 
+#ifdef __linux__
     int epoll_fd_{-1};
     int event_fd_{-1};
     std::mutex epoll_mtx_;
     bool use_ev_thread_pool_{false};
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
+#endif  // __linux__
 };
 
 /// Register a function that runs on all threads on task processor creation.
