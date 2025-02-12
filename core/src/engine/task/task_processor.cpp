@@ -130,8 +130,10 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     : task_queue_(MakeTaskQueue(config)),
       task_counter_(config.worker_threads),
       config_(std::move(config)),
-      pools_(std::move(pools)),
-      use_ev_thread_pool_(!PlatformSupportsEpollet()) {
+#ifdef __linux__
+      use_ev_thread_pool_(!PlatformSupportsEpollet()),
+#endif // __linux__
+      pools_(std::move(pools)) {
     utils::impl::FinishStaticRegistration();
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
