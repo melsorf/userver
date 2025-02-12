@@ -101,11 +101,18 @@ private:
 
     OverloadByLength GetOverloadByLength(std::size_t max_queue_length) noexcept;
 
-    OverloadByLength
-    ComputeOverloadByLength(OverloadByLength old_overload_by_length, std::size_t max_queue_length) noexcept;
+    OverloadByLength ComputeOverloadByLength(OverloadByLength old_overload_by_length, std::size_t max_queue_length)
+        noexcept;
+
+    void RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+
+    void UnregisterFd(int fd);
+
+    void RunEventLoop();
 
     concurrent::impl::InterferenceShield<impl::DetachedTasksSyncBlock> detached_contexts_{
-        impl::DetachedTasksSyncBlock::StopMode::kCancel};
+        impl::DetachedTasksSyncBlock::StopMode::kCancel
+    };
     concurrent::impl::InterferenceShield<OverloadedCache> overloaded_cache_;
     std::variant<TaskQueue, WorkStealingTaskQueue> task_queue_;
     impl::TaskCounter task_counter_;
@@ -121,11 +128,16 @@ private:
     std::atomic<std::chrono::microseconds> action_bit_and_max_task_queue_wait_time_{{}};
     std::atomic<std::int64_t> action_bit_and_max_task_queue_wait_length_{0};
 
-    std::atomic<bool> profiler_force_stacktrace_{false};
+    std::atomic<bool> rofiler_force_stacktrace_{false};
     std::atomic<bool> is_shutting_down_{false};
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
+
+    int epoll_fd_{-1};
+    int event_fd_{-1};
+    std::mutex epoll_mtx_;
+    bool use_ev_thread_pool_{false};
 };
 
 /// Register a function that runs on all threads on task processor creation.
