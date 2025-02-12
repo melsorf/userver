@@ -136,8 +136,8 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
-        if (!use_ev_thread_pool_) {
 #ifdef __linux__
+        if (!use_ev_thread_pool_) {
             epoll_fd_ = CreateEpollFd();
             event_fd_ = CreateEventFd();
 
@@ -147,21 +147,25 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
                 throw std::runtime_error("Failed to add eventfd to epoll");
             }
-#endif  // __linux__
         }
+#endif  // __linux__
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
-                if (use_ev_thread_pool_) {
-                    ProcessTasks();
-                } else {
 #ifdef __linux__
-                    RunEventLoop();
+                if (use_ev_thread_pool_)
 #endif  // __linux__
+                {
+                    ProcessTasks();
+                } 
+#ifdef __linux__
+                else {
+                    RunEventLoop();
                 }
+#endif  // __linux__
                 FinalizeWorkerThread();
             });
         }
