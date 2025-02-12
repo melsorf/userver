@@ -130,7 +130,7 @@ private:
     std::atomic<std::chrono::microseconds> action_bit_and_max_task_queue_wait_time_{{}};
     std::atomic<std::int64_t> action_bit_and_max_task_queue_wait_length_{0};
 
-    std::atomic<bool> rofiler_force_stacktrace_{false};
+    std::atomic<bool> profiler_force_stacktrace_{false};
     std::atomic<bool> is_shutting_down_{false};
     std::atomic<bool> task_trace_logger_set_{false};
 
