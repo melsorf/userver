@@ -503,7 +503,7 @@ void TaskProcessor::RunEventLoop() {
         // Proxess ready tasks
         std::visit(
             [](auto& queue) {
-                while (auto context = queue.PopNonBlocking()) {
+                while (auto context = queue.PopBlocking()) {
                     context->DoStep();
                     if (context->IsFinished()) {
                         context->FinishDetached();
