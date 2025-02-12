@@ -7,6 +7,7 @@ name: Alpine
           - master
           - develop
           - feature/**
+          - epollet-dev
 
 env:
     UBSAN_OPTIONS: print_stacktrace=1

@@ -7,6 +7,7 @@ name: MacOS
           - master
           - develop
           - feature/**
+          - epollet-dev
 
 env:
     CCACHE_DIR: /Users/runner/Library/Caches/ccache
