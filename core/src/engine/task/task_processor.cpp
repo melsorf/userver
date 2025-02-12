@@ -222,10 +222,10 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 
+#ifdef __linux__
     if (use_ev_thread_pool_) {
         return;
     }
-#ifdef __linux__
     // Write to event_fd_ to wake up the worker thread
     uint64_t value = 1;
     (void)write(event_fd_, &value, sizeof(value));
