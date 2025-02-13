@@ -597,7 +597,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         }
         {
             std::lock_guard<std::mutex> lock(epoll_mtx_);
-            for (int i = 0; i < n_events; ++i) {
+            for (int i = 0; i < ready; ++i) {
                 const auto fd = events[i].data.fd;
                 if (fd == event_fd_) {
                     // Clear the event_fd_
