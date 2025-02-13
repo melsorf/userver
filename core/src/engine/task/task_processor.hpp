@@ -109,7 +109,7 @@ private:
 
     void UnregisterFd(int fd);
 
-    void RunEventLoop();
+    void RunEventLoop(std::size_t index);
 #endif  // __linux__
 
     concurrent::impl::InterferenceShield<impl::DetachedTasksSyncBlock> detached_contexts_{
@@ -142,6 +142,7 @@ private:
     std::mutex epoll_mtx_;
     bool use_ev_thread_pool_{false};
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
+    std::vector<int> per_thread_epoll_fds_;
 #endif  // __linux__
 };
 
