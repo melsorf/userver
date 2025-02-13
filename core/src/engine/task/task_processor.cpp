@@ -99,7 +99,6 @@ auto MakeTaskQueue(TaskProcessorConfig config) {
 }
 
 bool PlatformSupportsEpollet() {
-    return false; // TODO
 #ifdef __linux__
     return true;
 #else   // __linux__
@@ -137,39 +136,37 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
 #endif // __linux__
     {
     utils::impl::FinishStaticRegistration();
+
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
+
 #ifdef __linux__
         if (!use_ev_thread_pool_) {
-            epoll_fd_ = CreateEpollFd();
-            event_fd_ = CreateEventFd();
-
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET;
-            ev.data.fd = event_fd_;
-            if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
-                throw std::runtime_error("Failed to add eventfd to epoll");
+            per_thread_epoll_fds_.resize(config_.worker_threads);
+            for (auto& epoll_fd : per_thread_epoll_fds_) {
+                epoll_fd = CreateEpollFd();
             }
+            event_fd_ = CreateEventFd();
         }
 #endif  // __linux__
+
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
+
 #ifdef __linux__
-                if (use_ev_thread_pool_)
-#endif  // __linux__
-                {
+                if (use_ev_thread_pool_) {
                     ProcessTasks();
-                } 
-#ifdef __linux__
-                else {
-                    RunEventLoop();
+                } else {
+                    RunEventLoop(i);
                 }
-#endif  // __linux__
+#else // __linux__
+                ProcessTasks();
+#endif // __linux__
                 FinalizeWorkerThread();
             });
         }
@@ -195,7 +192,14 @@ void TaskProcessor::Cleanup() noexcept {
     for (auto& w : workers_) {
         w.join();
     }
-
+#ifdef __linux__
+    if (!use_ev_thread_pool_) {
+        for (auto ep : per_thread_epoll_fds_) {
+            if (ep >= 0) ::close(ep);
+        }
+        if (event_fd_ >= 0) ::close(event_fd_);
+    }
+#endif
     UASSERT(!task_counter_.MayHaveTasksAlive());
 }
 
@@ -227,12 +231,11 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 
 #ifdef __linux__
-    if (use_ev_thread_pool_) {
-        return;
+    if (!use_ev_thread_pool_) {
+        // Write to event_fd_ to wake up the worker thread
+        uint64_t value = 1;
+        (void)write(event_fd_, &value, sizeof(value));
     }
-    // Write to event_fd_ to wake up the worker thread
-    uint64_t value = 1;
-    (void)write(event_fd_, &value, sizeof(value));
 #endif  // __linux__
 }
 
@@ -363,6 +366,21 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
     pools_->GetCoroPool().RegisterThread();
 
     TaskProcessorThreadStartedHook();
+
+#ifdef __linux__
+    // Register event_fd_ in this per-thread epoll if necessary
+    if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
+        const int epoll_fd = per_thread_epoll_fds_[index];
+        if (epoll_fd >= 0 && event_fd_ >= 0) {
+            struct epoll_event ev;
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = event_fd_;
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
+                throw std::runtime_error("Failed to add event_fd_ to per-thread epoll");
+            }
+        }
+    }
+#endif
 }
 
 void TaskProcessor::FinalizeWorkerThread() noexcept { pools_->GetCoroPool().ClearLocalCache(); }
@@ -502,12 +520,19 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 #ifdef __linux__
 void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return;
+    
+    std::size_t index = 0;
+    if (!per_thread_epoll_fds_.empty()) {
+        index = 0; // TODO: for example
+    }
+
+    std::lock_guard<std::mutex> lock(epoll_mtx_);
     struct epoll_event ev;
     ev.events = events | EPOLLET;
     ev.data.fd = fd;
-    std::lock_guard<std::mutex> lock(epoll_mtx_);
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        throw std::runtime_error("Failed to add fd to epoll");
+
+    if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
+        throw std::runtime_error("Failed to add fd to per-thread epoll");
     }
     fd_callbacks_[fd] = std::move(callback);
 }
@@ -515,38 +540,60 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
     std::lock_guard<std::mutex> lock(epoll_mtx_);
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-        throw std::runtime_error("Failed to remove fd from epoll");
+
+    if (!per_thread_epoll_fds_.empty()) {
+        int epoll_fd = per_thread_epoll_fds_[0];
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+            throw std::runtime_error("Failed to remove fd from per-thread epoll");
+        }
     }
     fd_callbacks_.erase(fd);
 }
 
-void TaskProcessor::RunEventLoop() {
+void TaskProcessor::RunEventLoop(const std::size_t index) {
+    const int epoll_fd = (index < per_thread_epoll_fds_.size())
+                             ? per_thread_epoll_fds_[index]
+                             : -1;
+    if (epoll_fd < 0) {
+        // fallback: just do tasks
+        ProcessTasks();
+        return;
+    }
+
     constexpr std::size_t kMaxEvents{16};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        // Proxess ready tasks
-        std::visit(
-            [](auto& queue) {
-                while (auto context = queue.PopBlocking()) {
-                    context->DoStep();
-                    if (context->IsFinished()) {
-                        context->FinishDetached();
-                    }
-                }
-            },
-            task_queue_
-        );
+        // Try processing any tasks that arrived
+        {
+            while (true) {
+                auto context = std::visit(
+                    [](auto&& q) { return q.PopBlocking(); },
+                    task_queue_);
+                if (!context) break;
 
-        // Wait for new events
-        const int n_events = epoll_wait(epoll_fd_, events, kMaxEvents, -1);
-        if (n_events < 0) {
-            if (errno == EINTR) continue;
-            throw std::runtime_error("Failed to wait for events");
+                CheckWaitTime(*context);
+                bool has_failed = false;
+                try {
+                    impl::TaskCounter::RunningToken token{GetTaskCounter()};
+                    context->DoStep();
+                } catch (const std::exception& ex) {
+                    LOG_ERROR() << "uncaught exception from DoStep: " << ex;
+                    has_failed = true;
+                }
+                pools_->GetCoroPool().AccountStackUsage();
+                if (has_failed || context->IsFinished()) {
+                    context->FinishDetached();
+                }
+            }
         }
-        if (n_events == 0) {
-            continue;
+        // Wait for epoll events
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            throw std::runtime_error("epoll_wait failed");
         }
         {
             std::lock_guard<std::mutex> lock(epoll_mtx_);
@@ -555,14 +602,19 @@ void TaskProcessor::RunEventLoop() {
                 if (fd == event_fd_) {
                     // Clear the event_fd_
                     uint64_t buffer;
-                    while (read(event_fd_, &buffer, sizeof(buffer)) > 0) {
-                    };
-                    // New tasks are ready; continue to process them
-                    continue;
-                }
-                const auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end()) {
-                    it->second(events[i].events);
+                    while (true) {
+                        ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                        if (ret < 0) {
+                            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                            throw std::runtime_error("Failed to read from event_fd_");
+                        }
+                        if (ret == 0) break; // No more data
+                    }
+                } else {
+                    const auto it = fd_callbacks_.find(fd);
+                    if (it != fd_callbacks_.end()) {
+                        it->second(events[i].events);
+                    }
                 }
             }
         }
