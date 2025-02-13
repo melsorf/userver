@@ -99,6 +99,7 @@ auto MakeTaskQueue(TaskProcessorConfig config) {
 }
 
 bool PlatformSupportsEpollet() {
+    return false; // TODO
 #ifdef __linux__
     return true;
 #else   // __linux__
