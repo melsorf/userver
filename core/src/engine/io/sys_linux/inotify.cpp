@@ -65,7 +65,7 @@ Inotify::Inotify() : fd_(engine::current_task::GetEventThread()) {
     UASSERT(fd_.GetFd() != -1);
 
     if (!engine::current_task::GetTaskProcessor().UseEvThreadPool()) {
-        engine::current_task::GetTaskProcessor().RegisterFd(fd_.GetFd(), EPOLLIN, [this](uint32_t events) {
+        engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN, [this](uint32_t events) {
             if (events & EPOLLIN) {
                 Dispatch();
             }
@@ -75,7 +75,7 @@ Inotify::Inotify() : fd_(engine::current_task::GetEventThread()) {
 
 Inotify::~Inotify() {
     if (!engine::current_task::GetTaskProcessor().UseEvThreadPool()) {
-        engine::current_task::GetTaskProcessor().UnregisterFd(fd_.GetFd());
+        engine::current_task::GetTaskProcessor().UnregisterFileDescriptor(fd_.GetFd());
     }
     
     auto fd = fd_.GetFd();
