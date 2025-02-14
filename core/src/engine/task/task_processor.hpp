@@ -76,6 +76,14 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+#ifdef __linux__
+    bool UseEvThreadPool() const { return use_ev_thread_pool_; }
+
+    void RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) { RegisterFd(fd, events, callback); }
+
+    void UnregisterFd(int fd) { UnregisterFd(fd); }
+#endif // __linux__
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
