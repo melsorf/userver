@@ -77,7 +77,7 @@ public:
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
 #ifdef __linux__
-    bool UseEvThreadPool() const { return use_ev_thread_pool_; }}
+    bool UseEvThreadPool() const { return use_ev_thread_pool_; }
 
     void RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
         RegisterFd(fd, events, std::move(callback));
