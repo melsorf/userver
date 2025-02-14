@@ -343,7 +343,7 @@ void RegisterThreadStartedHook(std::function<void()> func) {
     ThreadStartedHooks().push_back(std::move(func));
 }
 
-void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
+void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     switch (config_.os_scheduling) {
         case OsScheduling::kNormal:
             break;

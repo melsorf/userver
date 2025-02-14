@@ -87,7 +87,7 @@ private:
 
     void Cleanup() noexcept;
 
-    void PrepareWorkerThread(std::size_t index) noexcept;
+    void PrepareWorkerThread(std::size_t index);
 
     void FinalizeWorkerThread() noexcept;
 
