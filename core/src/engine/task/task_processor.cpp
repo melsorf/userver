@@ -35,6 +35,12 @@ struct OverloadActionAndValue final {
     Value value;
 };
 
+#ifdef __linux__
+namespace {
+thread_local std::size_t g_local_worker_thread_index = 0;
+}  // namespace
+#endif // __linux__
+
 template <class OverloadBitAndValue>
 constexpr OverloadActionAndValue<OverloadBitAndValue> GetOverloadActionAndValue(
     const std::atomic<OverloadBitAndValue>& x
@@ -368,6 +374,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     TaskProcessorThreadStartedHook();
 
 #ifdef __linux__
+    g_local_worker_thread_index = index;
     // Register event_fd_ in this per-thread epoll if necessary
     if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
@@ -521,10 +528,8 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return;
     
-    std::size_t index = 0;
-    if (!per_thread_epoll_fds_.empty()) {
-        index = 0; // TODO: for example
-    }
+    std::size_t index = g_local_worker_thread_index;
+    if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     std::lock_guard<std::mutex> lock(epoll_mtx_);
     struct epoll_event ev;
