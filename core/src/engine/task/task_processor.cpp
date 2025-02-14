@@ -544,12 +544,14 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
 
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
-    std::lock_guard<std::mutex> lock(epoll_mtx_);
 
+    std::lock_guard<std::mutex> lock(epoll_mtx_);
     if (!per_thread_epoll_fds_.empty()) {
         int epoll_fd = per_thread_epoll_fds_[0];
         if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-            throw std::runtime_error("Failed to remove fd from per-thread epoll");
+            if (errno != ENOENT) { // Ignore error if fd is not found
+                throw std::runtime_error("Failed to remove fd from per-thread epoll");
+            }
         }
     }
     fd_callbacks_.erase(fd);
