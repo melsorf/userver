@@ -61,9 +61,21 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 Inotify::Inotify() : fd_(engine::current_task::GetEventThread()) {
     fd_.Reset(inotify_init(), FdPoller::Kind::kRead);
     UASSERT(fd_.GetFd() != -1);
+
+    if (!engine::current_task::GetTaskProcessor().use_ev_thread_pool_) {
+        engine::current_task::GetTaskProcessor().RegisterFd(fd_.GetFd(), EPOLLIN, [this](uint32_t events) {
+            if (events & EPOLLIN) {
+                Dispatch();
+            }
+        });
+    }
 }
 
 Inotify::~Inotify() {
+    if (!engine::current_task::GetTaskProcessor().use_ev_thread_pool_) {
+        engine::current_task::GetTaskProcessor().UnregisterFd(fd_.GetFd());
+    }
+    
     auto fd = fd_.GetFd();
     if (fd != -1) {
         close(fd);
