@@ -375,7 +375,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
 
 #ifdef __linux__
     g_local_worker_thread_index = index;
-    // Register event_fd_ in this per-thread epoll if necessary
+    // Add event_fd_ to the epoll
     if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && event_fd_ >= 0) {
@@ -569,7 +569,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
 
     constexpr std::size_t kMaxEvents{16};
     struct epoll_event events[kMaxEvents];
-    constexpr int kEpollTimeoutMs = 10000;
+    constexpr int kEpollTimeoutMs = 100;
 
     while (!is_shutting_down_) {
         ProcessTasks();
@@ -578,6 +578,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, kEpollTimeoutMs);
         if (ready < 0) {
             if (errno == EINTR) {
+                // Interrupted by signal, continue
                 continue;
             }
             throw std::runtime_error("epoll_wait failed");
