@@ -561,39 +561,21 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                              : -1;
     if (epoll_fd < 0) {
         // fallback: just do tasks
-        ProcessTasks();
+        while (!is_shutting_down_) {
+            ProcessTasks();
+        }
         return;
     }
 
     constexpr std::size_t kMaxEvents{16};
     struct epoll_event events[kMaxEvents];
+    constexpr int kEpollTimeoutMs = 10000;
 
     while (!is_shutting_down_) {
-        // Try processing any tasks that arrived
-        {
-            while (true) {
-                auto context = std::visit(
-                    [](auto&& q) { return q.PopBlocking(); },
-                    task_queue_);
-                if (!context) break;
+        ProcessTasks();
+        if (is_shutting_down_) break;
 
-                CheckWaitTime(*context);
-                bool has_failed = false;
-                try {
-                    impl::TaskCounter::RunningToken token{GetTaskCounter()};
-                    context->DoStep();
-                } catch (const std::exception& ex) {
-                    LOG_ERROR() << "uncaught exception from DoStep: " << ex;
-                    has_failed = true;
-                }
-                pools_->GetCoroPool().AccountStackUsage();
-                if (has_failed || context->IsFinished()) {
-                    context->FinishDetached();
-                }
-            }
-        }
-        // Wait for epoll events
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, kEpollTimeoutMs);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
