@@ -137,7 +137,6 @@ private:
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
 
 #ifdef __linux__
-    int epoll_fd_{-1};
     int event_fd_{-1};
     std::mutex epoll_mtx_;
     bool use_ev_thread_pool_{false};
