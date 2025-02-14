@@ -4,8 +4,10 @@
 
 #include <unistd.h>
 #include <climits>
+#include <sys/epoll.h>
 
 #include <userver/engine/task/task_base.hpp>
+#include <userver/engine/task/task_processor.hpp> 
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 #include <utils/check_syscall.hpp>
