@@ -18,6 +18,7 @@
 #include <userver/utils/rand.hpp>
 #include <userver/utils/thread_name.hpp>
 #include <userver/utils/threads.hpp>
+#include <userver/utils/traceful_exception.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
 #include <engine/task/counted_coroutine_ptr.hpp>
