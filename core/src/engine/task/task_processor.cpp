@@ -116,7 +116,7 @@ bool PlatformSupportsEpollet() {
 int CreateEpollFd() {
     int fd = epoll_create1(0);
     if (fd == -1) {
-        throw std::runtime_error("Failed to create epoll instance");
+        throw utils::TracefulException("Failed to create epoll instance");
     }
     return fd;
 }
@@ -124,7 +124,7 @@ int CreateEpollFd() {
 int CreateEventFd() {
     int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (fd == -1) {
-        throw std::runtime_error("Failed to create eventfd");
+        throw utils::TracefulException("Failed to create eventfd");
     }
     return fd;
 }
@@ -383,7 +383,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
             ev.events = EPOLLIN | EPOLLET;
             ev.data.fd = event_fd_;
             if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
-                throw std::runtime_error("Failed to add event_fd_ to per-thread epoll");
+                throw utils::TracefulException("Failed to add event_fd_ to per-thread epoll");
             }
         }
     }
@@ -537,7 +537,7 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
     ev.data.fd = fd;
 
     if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
-        throw std::runtime_error("Failed to add fd to per-thread epoll");
+        throw utils::TracefulException("Failed to add fd to per-thread epoll");
     }
     fd_callbacks_[fd] = std::move(callback);
 }
@@ -550,7 +550,7 @@ void TaskProcessor::UnregisterFd(int fd) {
         int epoll_fd = per_thread_epoll_fds_[0];
         if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
             if (errno != ENOENT) { // Ignore error if fd is not found
-                throw std::runtime_error("Failed to remove fd from per-thread epoll");
+                throw utils::TracefulException("Failed to remove fd from per-thread epoll");
             }
         }
     }
@@ -583,7 +583,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 // Interrupted by signal, continue
                 continue;
             }
-            throw std::runtime_error("epoll_wait failed");
+            throw utils::TracefulException("epoll_wait failed");
         }
         {
             std::lock_guard<std::mutex> lock(epoll_mtx_);
@@ -596,7 +596,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                         ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
                         if (ret < 0) {
                             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                            throw std::runtime_error("Failed to read from event_fd_");
+                            throw utils::TracefulException("Failed to read from event_fd_");
                         }
                         if (ret == 0) break; // No more data
                     }
