@@ -542,7 +542,7 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
 
-    auto* local_data = engine::impl::local_task_counter_data.Use();
+    auto* local_data = engine::impl::GetLocalTaskCounterData().Use();
     std::size_t index = (local_data ? local_data->task_processor_thread_index : 0);
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 

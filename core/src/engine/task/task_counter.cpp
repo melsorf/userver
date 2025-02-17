@@ -11,6 +11,12 @@ namespace engine::impl {
 
 namespace {
 
+struct LocalTaskCounterDataFactory {
+    LocalTaskCounterData operator()() const {
+        return LocalTaskCounterData{};
+    }
+};
+
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
 using Rate = utils::statistics::Rate;
@@ -24,11 +30,12 @@ auto MakeLocalTaskCounterData = []() -> LocalTaskCounterData {
     return LocalTaskCounterData{};
 };
 
-compiler::ThreadLocal<LocalTaskCounterData> local_task_counter_data;
+compiler::ThreadLocal<LocalTaskCounterData, LocalTaskCounterDataFactory>
+    local_task_counter_data{LocalTaskCounterDataFactory{}};
 
 }  // namespace
 
-compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() {
+compiler::ThreadLocal<LocalTaskCounterData, LocalTaskCounterDataFactory>& GetLocalTaskCounterData() {
     return local_task_counter_data;
 }
 
