@@ -22,6 +22,7 @@ public:
 
     // Returns nullptr as a stop signal
     boost::intrusive_ptr<impl::TaskContext> PopBlocking();
+    boost::intrusive_ptr<impl::TaskContext> PopNonBlocking();
 
     void StopProcessing();
 

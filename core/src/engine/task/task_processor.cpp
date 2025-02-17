@@ -573,9 +573,21 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
     constexpr int kEpollTimeoutMs = 100;
 
     while (!is_shutting_down_) {
-        ProcessTasks();
-        if (is_shutting_down_) break;
+        while (true) {
+            auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
+                if (!context) break;
+                CheckWaitTime(*context);
+                try {
+                    impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                    context->DoStep();
+                } catch (...) {
+                    context->FinishDetached();
+                    throw;
+                }
+                if (context->IsFinished()) context->FinishDetached();
+        }
 
+        // Wait on epoll
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, kEpollTimeoutMs);
         if (ready < 0) {
             if (errno == EINTR) {
