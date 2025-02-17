@@ -11,12 +11,6 @@ namespace engine::impl {
 
 namespace {
 
-struct LocalTaskCounterDataFactory {
-    LocalTaskCounterData operator()() const {
-        return LocalTaskCounterData{};
-    }
-};
-
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
 using Rate = utils::statistics::Rate;
@@ -26,18 +20,13 @@ struct LocalTaskCounterData final {
     std::size_t task_processor_thread_index{};
 };
 
-auto MakeLocalTaskCounterData = []() -> LocalTaskCounterData {
+LocalTaskCounterData CreateLocalTaskCounterData() {
     return LocalTaskCounterData{};
-};
-
-compiler::ThreadLocal<LocalTaskCounterData, LocalTaskCounterDataFactory>
-    local_task_counter_data{LocalTaskCounterDataFactory{}};
+}
 
 }  // namespace
 
-compiler::ThreadLocal<LocalTaskCounterData, LocalTaskCounterDataFactory>& GetLocalTaskCounterData() {
-    return local_task_counter_data;
-}
+compiler::ThreadLocal local_task_counter_data(CreateLocalTaskCounterData);
 
 TaskCounter::Token::Token(TaskCounter& counter) noexcept : lock_(counter.tasks_alive_.Lock()) {
     concurrent::impl::AsymmetricThreadFenceLight();
