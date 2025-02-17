@@ -16,6 +16,9 @@ USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
 
+struct LocalTaskCounterData;
+struct LocalTaskCounterDataFactory;
+
 class TaskCounter final {
     using Rate = utils::statistics::Rate;
 
@@ -66,6 +69,8 @@ public:
     Rate GetSpuriousWakeups() const noexcept;
 
     Rate GetTasksStartedRunning() const noexcept;
+
+    std::size_t GetLocalTaskThreadId() const noexcept;
 
     std::uint64_t GetRunningTasks() const noexcept;
 

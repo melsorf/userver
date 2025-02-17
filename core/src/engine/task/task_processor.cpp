@@ -524,8 +524,7 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return;
     
-    auto* local_data = auto* local_data = engine::impl::GetLocalTaskCounterData().Use();
-    std::size_t index = (local_data ? local_data->task_processor_thread_index : 0);
+    std::size_t index = task_counter_.GetLocalTaskThreadId();
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     struct epoll_event ev;
@@ -542,8 +541,7 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
 
-    auto* local_data = engine::impl::GetLocalTaskCounterData().Use();
-    std::size_t index = (local_data ? local_data->task_processor_thread_index : 0);
+    std::size_t index = task_counter_.GetLocalTaskThreadId();
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     std::lock_guard<std::mutex> lock(epoll_mtx_);

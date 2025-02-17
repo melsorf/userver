@@ -20,13 +20,9 @@ struct LocalTaskCounterData final {
     std::size_t task_processor_thread_index{};
 };
 
-LocalTaskCounterData CreateLocalTaskCounterData() {
-    return LocalTaskCounterData{};
-}
+compiler::ThreadLocal local_task_counter_data = [] { return LocalTaskCounterData{}; };
 
 }  // namespace
-
-compiler::ThreadLocal local_task_counter_data([] { return CreateLocalTaskCounterData(); });
 
 TaskCounter::Token::Token(TaskCounter& counter) noexcept : lock_(counter.tasks_alive_.Lock()) {
     concurrent::impl::AsymmetricThreadFenceLight();
@@ -138,6 +134,11 @@ void TaskCounter::Increment(GlobalCounterId id) noexcept { global_counters_[stat
 void SetLocalTaskCounterData(TaskCounter& counter, std::size_t thread_id) {
     auto local_data = local_task_counter_data.Use();
     *local_data = {&counter, thread_id};
+}
+
+std::size_t TaskCounter::GetLocalTaskThreadId() const noexcept {
+    auto local_data = local_task_counter_data.Use();
+    return local_data->task_processor_thread_index;
 }
 
 }  // namespace engine::impl
