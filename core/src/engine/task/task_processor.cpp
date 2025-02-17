@@ -10,6 +10,7 @@
 
 #include <fmt/format.h>
 
+#include <userver/compiler/thread_local.hpp>
 #include <concurrent/impl/latch.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -21,6 +22,7 @@
 #include <userver/utils/traceful_exception.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
+#include <engine/task/task_counter.hpp> 
 #include <engine/task/counted_coroutine_ptr.hpp>
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_processor_pools.hpp>
@@ -35,12 +37,6 @@ struct OverloadActionAndValue final {
     TaskProcessorSettings::OverloadAction action;
     Value value;
 };
-
-#ifdef __linux__
-namespace {
-thread_local std::size_t g_local_worker_thread_index = 0;
-}  // namespace
-#endif // __linux__
 
 template <class OverloadBitAndValue>
 constexpr OverloadActionAndValue<OverloadBitAndValue> GetOverloadActionAndValue(
@@ -375,7 +371,6 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     TaskProcessorThreadStartedHook();
 
 #ifdef __linux__
-    g_local_worker_thread_index = index;
     // Add event_fd_ to the epoll
     if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
@@ -529,14 +524,15 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return;
     
-    std::size_t index = g_local_worker_thread_index;
+    auto* local_data = engine::impl::local_task_counter_data.Use();
+    std::size_t index = (local_data ? local_data->task_processor_thread_index : 0);
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
-    std::lock_guard<std::mutex> lock(epoll_mtx_);
     struct epoll_event ev;
     ev.events = events | EPOLLET;
     ev.data.fd = fd;
 
+    std::lock_guard<std::mutex> lock(epoll_mtx_);
     if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
         throw utils::TracefulException("Failed to add fd to per-thread epoll");
     }
@@ -546,9 +542,13 @@ void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint3
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
 
+    auto* local_data = engine::impl::local_task_counter_data.Use();
+    std::size_t index = (local_data ? local_data->task_processor_thread_index : 0);
+    if (index >= per_thread_epoll_fds_.size()) index = 0;
+
     std::lock_guard<std::mutex> lock(epoll_mtx_);
     if (!per_thread_epoll_fds_.empty()) {
-        int epoll_fd = per_thread_epoll_fds_[0];
+        int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
             if (errno != ENOENT) { // Ignore error if fd is not found
                 throw utils::TracefulException("Failed to remove fd from per-thread epoll");

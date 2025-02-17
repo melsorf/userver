@@ -147,7 +147,7 @@ private:
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
 
 #ifdef __linux__
-    int event_fd_{-1};
+    std::atomic<int> event_fd_{-1};
     std::mutex epoll_mtx_;
     bool use_ev_thread_pool_{false};
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
