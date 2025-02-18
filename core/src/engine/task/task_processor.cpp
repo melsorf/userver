@@ -588,7 +588,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 LOG_ERROR() << "unhandled exception from DoStep()";
                 has_failed = true;
             }
-            if (if has_failed || context->IsFinished()) {
+            if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
         }
