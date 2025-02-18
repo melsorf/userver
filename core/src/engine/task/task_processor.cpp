@@ -582,6 +582,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
                 context->DoStep();
+                pools_->GetCoroPool().AccountStackUsage();
             } catch (...) {
                 context->FinishDetached();
                 throw;
