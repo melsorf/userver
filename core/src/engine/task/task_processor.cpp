@@ -578,16 +578,19 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
             if (!context) break;
             has_tasks = true;
+            bool has_failed{false};
             CheckWaitTime(*context);
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
                 context->DoStep();
                 pools_->GetCoroPool().AccountStackUsage();
             } catch (...) {
-                context->FinishDetached();
-                throw;
+                LOG_ERROR() << "unhandled exception from DoStep()";
+                has_failed = true;
             }
-            if (context->IsFinished()) context->FinishDetached();
+            if (if has_failed || context->IsFinished()) {
+                context->FinishDetached();
+            }
         }
 
         if (!has_tasks) {
