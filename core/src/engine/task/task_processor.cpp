@@ -583,11 +583,11 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
                 context->DoStep();
-                pools_->GetCoroPool().AccountStackUsage();
             } catch (...) {
                 LOG_ERROR() << "unhandled exception from DoStep()";
                 has_failed = true;
             }
+            pools_->GetCoroPool().AccountStackUsage();
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
