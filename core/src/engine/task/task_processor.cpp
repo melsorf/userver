@@ -609,44 +609,44 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 context->FinishDetached();
             }
 
-            if (!has_tasks) {
-                // Wait on epoll
-                int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-                if (ready < 0) {
-                    if (errno == EINTR) {
-                        // Interrupted by signal, continue
-                        continue;
-                    }
-                    throw utils::TracefulException("epoll_wait failed");
+            if (has_tasks) {
+                continue;
+            }
+            // Wait on epoll
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    // Interrupted by signal, continue
+                    continue;
                 }
-                {
-                    std::lock_guard<std::mutex> lock(epoll_mtx_);
-                    for (int i = 0; i < ready; ++i) {
-                        const auto fd = events[i].data.fd;
-                        if (fd == event_fd_) {
-                            // Clear the event_fd_
-                            uint64_t buffer;
-                            while (true) {
-                                ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
-                                if (ret < 0) {
-                                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                                    throw utils::TracefulException("Failed to read from event_fd_");
-                                }
-                                if (ret == 0) break;  // No more data
+                throw utils::TracefulException("epoll_wait failed");
+            }
+            {
+                std::lock_guard<std::mutex> lock(epoll_mtx_);
+                for (int i = 0; i < ready; ++i) {
+                    const auto fd = events[i].data.fd;
+                    if (fd == event_fd_) {
+                        // Clear the event_fd_
+                        uint64_t buffer;
+                        while (true) {
+                            ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                            if (ret < 0) {
+                                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                                throw utils::TracefulException("Failed to read from event_fd_");
                             }
-                        } else {
-                            const auto it = fd_callbacks_.find(fd);
-                            if (it != fd_callbacks_.end()) {
-                                it->second(events[i].events);
-                            }
+                            if (ret == 0) break;  // No more data
+                        }
+                    } else {
+                        const auto it = fd_callbacks_.find(fd);
+                        if (it != fd_callbacks_.end()) {
+                            it->second(events[i].events);
                         }
                     }
                 }
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
     }
+}
 #endif  // __linux__
 
 }  // namespace engine
