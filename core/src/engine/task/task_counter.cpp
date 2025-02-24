@@ -136,7 +136,7 @@ void SetLocalTaskCounterData(TaskCounter& counter, std::size_t thread_id) {
     *local_data = {&counter, thread_id};
 }
 
-compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() {
+compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() const noexcept {
     return local_task_counter_data;
 }
 
