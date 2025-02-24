@@ -16,7 +16,7 @@
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
-
+    
 struct LocalTaskCounterData;
 
 class TaskCounter final {

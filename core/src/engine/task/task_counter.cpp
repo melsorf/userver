@@ -15,14 +15,14 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
 using Rate = utils::statistics::Rate;
 
+}  // namespace
+
 struct LocalTaskCounterData final {
     TaskCounter* local_counter{nullptr};
     std::size_t task_processor_thread_index{};
 };
 
 compiler::ThreadLocal local_task_counter_data = [] { return LocalTaskCounterData{}; };
-
-}  // namespace
 
 TaskCounter::Token::Token(TaskCounter& counter) noexcept : lock_(counter.tasks_alive_.Lock()) {
     concurrent::impl::AsymmetricThreadFenceLight();
