@@ -5,7 +5,6 @@
 
 #include <boost/range/adaptor/transformed.hpp>
 
-#include <userver/compiler/thread_local.hpp>
 #include <userver/concurrent/impl/asymmetric_fence.hpp>
 #include <userver/concurrent/impl/interference_shield.hpp>
 #include <userver/concurrent/impl/striped_read_indicator.hpp>
@@ -16,8 +15,6 @@
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
-
-struct LocalTaskCounterData;
 
 class TaskCounter final {
     using Rate = utils::statistics::Rate;
@@ -69,6 +66,8 @@ public:
     Rate GetSpuriousWakeups() const noexcept;
 
     Rate GetTasksStartedRunning() const noexcept;
+
+    std::size_t GetLocalTaskThreadId() const noexcept;
 
     std::uint64_t GetRunningTasks() const noexcept;
 
@@ -169,8 +168,6 @@ private:
 };
 
 void SetLocalTaskCounterData(TaskCounter& counter, std::size_t thread_id);
-
-compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData();
 
 }  // namespace engine::impl
 

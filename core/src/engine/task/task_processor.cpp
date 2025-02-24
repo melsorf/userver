@@ -10,8 +10,8 @@
 
 #include <fmt/format.h>
 
-#include <userver/compiler/thread_local.hpp>
 #include <concurrent/impl/latch.hpp>
+#include <userver/compiler/thread_local.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 #include <userver/utils/impl/static_registration.hpp>
@@ -22,9 +22,9 @@
 #include <userver/utils/traceful_exception.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
-#include <engine/task/task_counter.hpp> 
 #include <engine/task/counted_coroutine_ptr.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_counter.hpp>
 #include <engine/task/task_processor_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -135,9 +135,10 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
       config_(std::move(config)),
       pools_(std::move(pools))
 #ifdef __linux__
-      , use_ev_thread_pool_(!PlatformSupportsEpollet())
-#endif // __linux__
-    {
+      ,
+      use_ev_thread_pool_(!PlatformSupportsEpollet())
+#endif  // __linux__
+{
     utils::impl::FinishStaticRegistration();
 
     try {
@@ -167,9 +168,9 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                 } else {
                     RunEventLoop(i);
                 }
-#else // __linux__
+#else   // __linux__
                 ProcessTasks();
-#endif // __linux__
+#endif  // __linux__
                 FinalizeWorkerThread();
             });
         }
@@ -523,9 +524,8 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return 0;
-    
-    auto* local_data = engine::impl::GetLocalTaskCounterData().Use();
-    std::size_t index = local_data ? local_data->task_processor_thread_index : 0;
+
+    std::size_t index = task_counter_.GetLocalTaskThreadId();
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     struct epoll_event ev;
@@ -577,9 +577,7 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t index) {
-    const int epoll_fd = (index < per_thread_epoll_fds_.size())
-                             ? per_thread_epoll_fds_[index]
-                             : -1;
+    const int epoll_fd = (index < per_thread_epoll_fds_.size()) ? per_thread_epoll_fds_[index] : -1;
     if (epoll_fd < 0) {
         // fallback: just do tasks
         while (!is_shutting_down_) {
@@ -611,44 +609,44 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 context->FinishDetached();
             }
 
-        if (!has_tasks) {
-            // Wait on epoll
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-            if (ready < 0) {
-                if (errno == EINTR) {
-                    // Interrupted by signal, continue
-                    continue;
+            if (!has_tasks) {
+                // Wait on epoll
+                int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+                if (ready < 0) {
+                    if (errno == EINTR) {
+                        // Interrupted by signal, continue
+                        continue;
+                    }
+                    throw utils::TracefulException("epoll_wait failed");
                 }
-                throw utils::TracefulException("epoll_wait failed");
-            }
-            {
-                std::lock_guard<std::mutex> lock(epoll_mtx_);
-                for (int i = 0; i < ready; ++i) {
-                    const auto fd = events[i].data.fd;
-                    if (fd == event_fd_) {
-                        // Clear the event_fd_
-                        uint64_t buffer;
-                        while (true) {
-                            ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
-                            if (ret < 0) {
-                                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                                throw utils::TracefulException("Failed to read from event_fd_");
+                {
+                    std::lock_guard<std::mutex> lock(epoll_mtx_);
+                    for (int i = 0; i < ready; ++i) {
+                        const auto fd = events[i].data.fd;
+                        if (fd == event_fd_) {
+                            // Clear the event_fd_
+                            uint64_t buffer;
+                            while (true) {
+                                ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                                if (ret < 0) {
+                                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                                    throw utils::TracefulException("Failed to read from event_fd_");
+                                }
+                                if (ret == 0) break;  // No more data
                             }
-                            if (ret == 0) break; // No more data
-                        }
-                    } else {
-                        const auto it = fd_callbacks_.find(fd);
-                        if (it != fd_callbacks_.end()) {
-                            it->second(events[i].events);
+                        } else {
+                            const auto it = fd_callbacks_.find(fd);
+                            if (it != fd_callbacks_.end()) {
+                                it->second(events[i].events);
+                            }
                         }
                     }
                 }
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-}
 #endif  // __linux__
 
 }  // namespace engine
