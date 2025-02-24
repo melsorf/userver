@@ -521,34 +521,54 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 }
 
 #ifdef __linux__
-void TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (use_ev_thread_pool_) return;
+std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+    if (use_ev_thread_pool_) return 0;
     
-    std::size_t index = task_counter_.GetLocalTaskThreadId();
+    auto* local_data = engine::impl::GetLocalTaskCounterData().Use();
+    std::size_t index = local_data ? local_data->task_processor_thread_index : 0;
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     struct epoll_event ev;
     ev.events = events | EPOLLET;
     ev.data.fd = fd;
 
-    std::lock_guard<std::mutex> lock(epoll_mtx_);
-    if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
-        throw utils::TracefulException("Failed to add fd to per-thread epoll");
+    {
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
+        if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
+            throw utils::TracefulException("Failed to add fd to per-thread epoll");
+        }
+        fd_callbacks_[fd] = std::move(callback);
     }
-    fd_callbacks_[fd] = std::move(callback);
+
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        fd_to_thread_index_[fd] = index;
+    }
+
+    return index;
 }
 
 void TaskProcessor::UnregisterFd(int fd) {
     if (use_ev_thread_pool_) return;
 
-    std::size_t index = task_counter_.GetLocalTaskThreadId();
+    std::size_t index;
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        auto it = fd_to_thread_index_.find(fd);
+        if (it == fd_to_thread_index_.end()) {
+            throw utils::TracefulException("Failed to find fd in fd_to_thread_index_ map");
+        }
+        index = it->second;
+        fd_to_thread_index_.erase(it);
+    }
+
     if (index >= per_thread_epoll_fds_.size()) index = 0;
 
     std::lock_guard<std::mutex> lock(epoll_mtx_);
     if (!per_thread_epoll_fds_.empty()) {
         int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-            if (errno != ENOENT) { // Ignore error if fd is not found
+            if (errno != ENOENT) {
                 throw utils::TracefulException("Failed to remove fd from per-thread epoll");
             }
         }
@@ -570,7 +590,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
 
     constexpr std::size_t kMaxEvents{16};
     struct epoll_event events[kMaxEvents];
-    constexpr int kEpollTimeoutMs = 100;
 
     while (!is_shutting_down_) {
         bool has_tasks{false};
@@ -591,11 +610,10 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
-        }
 
         if (!has_tasks) {
             // Wait on epoll
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, kEpollTimeoutMs);
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
             if (ready < 0) {
                 if (errno == EINTR) {
                     // Interrupted by signal, continue
