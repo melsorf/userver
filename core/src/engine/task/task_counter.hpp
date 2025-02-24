@@ -16,7 +16,7 @@
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
-    
+
 struct LocalTaskCounterData;
 
 class TaskCounter final {
@@ -69,8 +69,6 @@ public:
     Rate GetSpuriousWakeups() const noexcept;
 
     Rate GetTasksStartedRunning() const noexcept;
-
-    compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() const noexcept;
 
     std::uint64_t GetRunningTasks() const noexcept;
 
@@ -171,6 +169,8 @@ private:
 };
 
 void SetLocalTaskCounterData(TaskCounter& counter, std::size_t thread_id);
+
+compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData();
 
 }  // namespace engine::impl
 
