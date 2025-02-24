@@ -22,7 +22,7 @@ struct LocalTaskCounterData final {
     std::size_t task_processor_thread_index{};
 };
 
-compiler::ThreadLocal local_task_counter_data = [] { return LocalTaskCounterData{}; };
+compiler::ThreadLocal<LocalTaskCounterData> local_task_counter_data([] { return LocalTaskCounterData{}; });
 
 TaskCounter::Token::Token(TaskCounter& counter) noexcept : lock_(counter.tasks_alive_.Lock()) {
     concurrent::impl::AsymmetricThreadFenceLight();
@@ -136,9 +136,7 @@ void SetLocalTaskCounterData(TaskCounter& counter, std::size_t thread_id) {
     *local_data = {&counter, thread_id};
 }
 
-compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() {
-    return local_task_counter_data;
-}
+compiler::ThreadLocal<LocalTaskCounterData>& GetLocalTaskCounterData() { return local_task_counter_data; }
 
 }  // namespace engine::impl
 
