@@ -590,9 +590,11 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
+        bool has_tasks{false};
         while (true) {
             auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
             if (!context) break;
+            has_tasks = true;
             bool has_failed{false};
             CheckWaitTime(*context);
             try {
@@ -606,37 +608,37 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
-        }
-        if (is_shutting_down_) {
-            break;
-        }
-        // If there are no tasks, wait in epoll.
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        if (ready < 0) {
-            if (errno == EINTR) {
-                continue;
+
+            if (has_tasks) continue;
+             // Wait on epoll
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    // Interrupted by signal, continue
+                    continue;
+                }
+                throw utils::TracefulException("epoll_wait failed");
             }
-            throw utils::TracefulException("epoll_wait failed");
-        }
-        {
-            std::lock_guard<std::mutex> lock(epoll_mtx_);
-            for (int i = 0; i < ready; ++i) {
-                const auto fd = events[i].data.fd;
-                if (fd == event_fd_) {
-                    // Clear the event_fd_
-                    uint64_t buffer;
-                    while (true) {
-                        ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
-                        if (ret < 0) {
-                            if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) break;
-                            throw utils::TracefulException("Failed to read from event_fd_");
+            {
+                std::lock_guard<std::mutex> lock(epoll_mtx_);
+                for (int i = 0; i < ready; ++i) {
+                    const auto fd = events[i].data.fd;
+                    if (fd == event_fd_) {
+                        // Clear the event_fd_
+                        uint64_t buffer;
+                        while (true) {
+                            ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                            if (ret < 0) {
+                                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                                throw utils::TracefulException("Failed to read from event_fd_");
+                            }
+                            if (ret == 0) break;  // No more data
                         }
-                        if (ret == 0) break;  // No more data
-                    }
-                } else {
-                    const auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        it->second(events[i].events);
+                    } else {
+                        const auto it = fd_callbacks_.find(fd);
+                        if (it != fd_callbacks_.end()) {
+                            it->second(events[i].events);
+                        }
                     }
                 }
             }
