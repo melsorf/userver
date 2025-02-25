@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <moodycamel/blockingconcurrentqueue.h>
 #include <moodycamel/lightweightsemaphore.h>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
