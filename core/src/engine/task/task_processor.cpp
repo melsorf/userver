@@ -598,6 +598,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 // 2. Stop signal: is_shutting_down_ set.
                 if (is_shutting_down_) {
                     std::get<TaskQueue>(task_queue_).StopProcessing();
+                    return;
                 }
                 break;
             }
