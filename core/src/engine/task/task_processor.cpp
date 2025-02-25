@@ -590,7 +590,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        bool has_tasks{false};
         while (true) {
             auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
             if (!context) {
@@ -602,7 +601,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 }
                 break;
             }
-            has_tasks = true;
             bool has_failed{false};
             CheckWaitTime(*context);
             try {
