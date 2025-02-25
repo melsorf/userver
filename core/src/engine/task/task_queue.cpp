@@ -40,12 +40,13 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopNonBlocking() {
     thread_local moodycamel::ConsumerToken token(queue_);
     impl::TaskContext* raw_context = nullptr;
     if (!queue_.try_dequeue(token, raw_context)) {
-        // no more tasks
+        // no tasks available at the moment
         return {};
     }
-    if (!raw_context) {
+    if (raw_context == nullptr) {
         // "stop" token
-        return {};
+        DoPush(nullptr);
+        return {nullptr};
     }
     return {raw_context, /*add_ref=*/false};
 }
