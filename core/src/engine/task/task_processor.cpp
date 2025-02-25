@@ -591,8 +591,19 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
 
     while (!is_shutting_down_) {
         bool got_task = false;
-        while (auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking()) {
+        while (true) {
+            auto opt_context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
+            if (!opt_context.has_value()) {
+                // No tasks available
+                break;
+            }
+            if (!opt_context.value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
+            }
             got_task = true;
+            auto context = opt_context.value();
             bool has_failed{false};
             CheckWaitTime(*context);
             try {
