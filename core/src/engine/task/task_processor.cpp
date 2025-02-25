@@ -592,16 +592,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
     while (!is_shutting_down_) {
         while (true) {
             auto context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
-            if (!context) {
-                // The absence of tasks can happen in two cases:
-                // 1. There are no tasks yet - go to epoll_wait.
-                // 2. Stop signal: is_shutting_down_ set.
-                if (is_shutting_down_) {
-                    std::get<TaskQueue>(task_queue_).StopProcessing();
-                    return;
-                }
-                break;
-            }
+            if (!context) break;
             bool has_failed{false};
             CheckWaitTime(*context);
             try {
@@ -615,6 +606,9 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
+        }
+        if (is_shutting_down_) {
+            break;
         }
         // If there are no tasks, wait in epoll.
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
