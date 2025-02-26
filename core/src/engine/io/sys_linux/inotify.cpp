@@ -149,7 +149,7 @@ void Inotify::Dispatch() {
     const bool repeat = !use_ev_thread_pool_;
 
     while (true) {
-        auto len = read(fd_.GetFd(), &buff, sizeof(buff));
+        auto len = read(fd_.GetFd(), buff, sizeof(buff));
         if (len < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // No more data available; this is normal condition
