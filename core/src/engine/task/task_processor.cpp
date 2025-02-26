@@ -593,7 +593,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         return;
     }
 
-    constexpr std::size_t kMaxEvents{16};
+    constexpr std::size_t kMaxEvents{32};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
@@ -651,6 +651,8 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                         }
                         if (ret == 0) break;  // No more data
                     }
+                    // Check for tasks immediately after event_fd_ is processed
+                    break;
                 } else {
                     const auto it = fd_callbacks_.find(fd);
                     if (it != fd_callbacks_.end()) {
