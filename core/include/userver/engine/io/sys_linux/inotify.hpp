@@ -89,6 +89,7 @@ private:
     void Dispatch();
 
     FdPoller fd_;
+    bool use_ev_thread_pool_;
     std::queue<Event> pending_events_;
     std::unordered_map<std::string, int> path_to_wd_;
     std::unordered_map<int, std::string> wd_to_path_;

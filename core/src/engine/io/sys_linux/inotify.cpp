@@ -60,11 +60,13 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
     return lh;
 }
 
-Inotify::Inotify() : fd_(engine::current_task::GetEventThread()) {
+Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
+    use_ev_thread_pool_(engine::current_task::GetTaskProcessor().UseEvThreadPool()) 
+{
     fd_.Reset(inotify_init(), FdPoller::Kind::kRead);
     UASSERT(fd_.GetFd() != -1);
 
-    if (!engine::current_task::GetTaskProcessor().UseEvThreadPool()) {
+    if (!use_ev_thread_pool_) {
         engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN, [this](uint32_t events) {
             if (events & EPOLLIN) {
                 Dispatch();
