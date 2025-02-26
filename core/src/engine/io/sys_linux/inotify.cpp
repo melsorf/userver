@@ -138,7 +138,7 @@ void Inotify::Dispatch() {
     };
 
     // For ev thread pool mode, do a single read; for epoll, read until no more events
-    const bool repeat = !engine::current_task::GetTaskProcessor().UseEvThreadPool();
+    const bool repeat = !use_ev_thread_pool_;
 
     while (true) {
         auto len = read(fd_.GetFd(), &buff, sizeof(buff));
