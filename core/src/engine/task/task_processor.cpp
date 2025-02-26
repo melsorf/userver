@@ -533,8 +533,7 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (use_ev_thread_pool_) return 0;
 
-    std::size_t index = task_counter_.GetLocalTaskThreadId();
-    if (index >= per_thread_epoll_fds_.size()) index = 0;
+    std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
     ev.events = events | EPOLLET;
@@ -570,7 +569,7 @@ void TaskProcessor::UnregisterFd(int fd) {
         fd_to_thread_index_.erase(it);
     }
 
-    if (index >= per_thread_epoll_fds_.size()) index = 0;
+    index = index % per_thread_epoll_fds_.size();
 
     std::lock_guard<std::mutex> lock(epoll_mtx_);
     if (!per_thread_epoll_fds_.empty()) {
@@ -630,7 +629,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         }
         if (!got_task) {
             // Wait on epoll
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
             if (ready < 0) {
                 if (errno == EINTR) {
                     // Interrupted by signal, continue
