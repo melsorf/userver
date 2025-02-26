@@ -629,7 +629,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         }
         if (!got_task) {
             // Wait on epoll
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
             if (ready < 0) {
                 if (errno == EINTR) {
                     // Interrupted by signal, continue
