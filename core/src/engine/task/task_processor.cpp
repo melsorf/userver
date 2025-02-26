@@ -580,6 +580,9 @@ void TaskProcessor::WakeupEventLoop() const {
     if (!use_ev_thread_pool_ && event_fd_ >= 0) {
         uint64_t value = 1;
         (void)write(event_fd_, &value, sizeof(value));
+        if (ret != sizeof(value)) {
+            LOG_ERROR() << "Failed to write to event_fd_: " << strerror(errno);
+        }
     }
 }
 
@@ -629,7 +632,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         if (got_task) continue;
         // If we didn't process any tasks in this iteration, wait for events
         // We'll be woken up by event_fd_ when a new task is scheduled
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
         if (ready < 0) {
             if (errno == EINTR) continue;
             throw utils::TracefulException("epoll_wait failed");
