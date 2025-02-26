@@ -118,9 +118,11 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
         return front;
     }
 
-    auto kind = fd_.Wait(deadline);
-    if (!kind) return {};
-
+    if (use_ev_thread_pool_) {
+        auto kind = fd_.Wait(deadline);
+        if (!kind) return {};
+    }
+    // In EPOLLET don't wait - immediately process whatever is present
     Dispatch();
 
     if (!pending_events_.empty()) {
@@ -152,8 +154,7 @@ void Inotify::Dispatch() {
         auto len = read(fd_.GetFd(), buff, sizeof(buff));
         if (len < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // No more data available; this is normal condition
-                // for edge-triggered mode when all data has been consumed
+                // No more data available (non-blocking mode)
                 break;
             }
             utils::CheckSyscall(len, "read");
