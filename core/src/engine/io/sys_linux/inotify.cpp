@@ -2,6 +2,7 @@
 
 #include <userver/engine/io/sys_linux/inotify.hpp>
 
+#include <fcntl.h>
 #include <unistd.h>
 #include <climits>
 #include <sys/epoll.h>
