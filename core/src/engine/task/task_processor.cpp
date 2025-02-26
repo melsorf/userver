@@ -635,7 +635,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         if (!got_task) {
             // Wait on epoll with an infinite timeout
             // We'll be woken up by event_fd_ when a new task is scheduled
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
             if (ready < 0) {
                 if (errno == EINTR) {
                     // Interrupted by signal, continue
