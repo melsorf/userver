@@ -82,8 +82,9 @@ public:
     void RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
         RegisterFd(fd, events, std::move(callback));
     }
-
     void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
+    
+    void WakeupEventLoop() const;
 #endif // __linux__
 
 private:

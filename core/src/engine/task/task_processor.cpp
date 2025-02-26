@@ -209,15 +209,10 @@ void TaskProcessor::Cleanup() noexcept {
 
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
-    detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
-
-    #ifdef __linux__
-    if (!use_ev_thread_pool_) {
-        // Write to event_fd_ to wake up all threads
-        uint64_t value = 1;
-        (void)write(event_fd_, &value, sizeof(value));
-    }
+#ifdef __linux__
+    WakeupEventLoop();
 #endif  // __linux__
+    detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
 
 void TaskProcessor::Schedule(impl::TaskContext* context) {
@@ -243,11 +238,7 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 
 #ifdef __linux__
-    if (!use_ev_thread_pool_) {
-        // Write to event_fd_ to wake up the worker thread
-        uint64_t value = 1;
-        (void)write(event_fd_, &value, sizeof(value));
-    }
+    WakeupEventLoop();
 #endif  // __linux__
 }
 
@@ -581,6 +572,15 @@ void TaskProcessor::UnregisterFd(int fd) {
         }
     }
     fd_callbacks_.erase(fd);
+
+    WakeupEventLoop();
+}
+
+void TaskProcessor::WakeupEventLoop() const {
+    if (!use_ev_thread_pool_ && event_fd_ >= 0) {
+        uint64_t value = 1;
+        (void)write(event_fd_, &value, sizeof(value));
+    }
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t index) {
@@ -607,12 +607,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             if (!opt_context.value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
-                if (event_fd_ >= 0) {
-                    uint64_t value = 1;
-                    if (write(event_fd_, &value, sizeof(value)) != sizeof(value)) {
-                        LOG_ERROR() << "Failed to write to event_fd_";
-                    }
-                }
                 break;
             }
             got_task = true;
@@ -631,41 +625,38 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 context->FinishDetached();
             }
         }
+        if (is_shutting_down_) break;
+        if (got_task) continue;
         // If we didn't process any tasks in this iteration, wait for events
-        if (!got_task) {
-            // Wait on epoll with an infinite timeout
-            // We'll be woken up by event_fd_ when a new task is scheduled
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
-            if (ready < 0) {
-                if (errno == EINTR) {
-                    // Interrupted by signal, continue
-                    continue;
+        // We'll be woken up by event_fd_ when a new task is scheduled
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            throw utils::TracefulException("epoll_wait failed");
+        }
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
+        for (int i = 0; i < ready; ++i) {
+            const auto fd = events[i].data.fd;
+            if (fd == event_fd_) {
+                // Clear the event_fd_
+                uint64_t buffer;
+                while (true) {
+                    ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                    if (ret < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        throw utils::TracefulException("Failed to read from event_fd_");
+                    }
+                    if (ret == 0) break;  // No more data
                 }
-                throw utils::TracefulException("epoll_wait failed");
-            }
-            std::lock_guard<std::mutex> lock(epoll_mtx_);
-            for (int i = 0; i < ready; ++i) {
-                const auto fd = events[i].data.fd;
-                if (fd == event_fd_) {
-                    // Clear the event_fd_
-                    uint64_t buffer;
-                    while (true) {
-                        ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
-                        if (ret < 0) {
-                            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                            throw utils::TracefulException("Failed to read from event_fd_");
-                        }
-                        if (ret == 0) break;  // No more data
-                    }
-                    // Check for tasks immediately after event_fd_ is processed
-                    break;
-                } else {
-                    const auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        it->second(events[i].events);
-                    }
+                // Check for tasks immediately after event_fd_ is processed
+                break;
+            } else {
+                const auto it = fd_callbacks_.find(fd);
+                if (it != fd_callbacks_.end()) {
+                    it->second(events[i].events);
                 }
             }
+        }
         }
     }
 }
