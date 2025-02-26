@@ -210,6 +210,14 @@ void TaskProcessor::Cleanup() noexcept {
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
+
+    #ifdef __linux__
+    if (!use_ev_thread_pool_) {
+        // Write to event_fd_ to wake up all threads
+        uint64_t value = 1;
+        (void)write(event_fd_, &value, sizeof(value));
+    }
+#endif  // __linux__
 }
 
 void TaskProcessor::Schedule(impl::TaskContext* context) {
