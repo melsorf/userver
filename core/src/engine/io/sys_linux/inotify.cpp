@@ -123,16 +123,30 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
 
 void Inotify::Dispatch() {
     char buff[sizeof(inotify_event) + NAME_MAX + 1];
-    auto len = read(fd_.GetFd(), &buff, sizeof(buff));
-    utils::CheckSyscall(len, "read");
 
-    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
-    const auto* event = reinterpret_cast<const inotify_event*>(buff);
-    for (ssize_t pos = 0; pos < len; pos += sizeof(inotify_event) + event->len) {
-        event = reinterpret_cast<inotify_event*>(buff + pos);
-        std::string path =
-            event->len ? (wd_to_path_[event->wd] + '/' + std::string{event->name}) : wd_to_path_[event->wd];
-        pending_events_.push(Event{std::move(path), EventTypeMask(static_cast<EventType>(event->mask))});
+    auto process_buffer = [this, &buff](ssize_t len) {
+        for (ssize_t pos = 0; pos < len;) {
+            // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+            auto* event = reinterpret_cast<inotify_event*>(buff + pos);
+            pos += sizeof(inotify_event) + event->len;
+            std::string path =
+                event->len ? (wd_to_path_[event->wd] + '/' + std::string{event->name}) : wd_to_path_[event->wd];
+            pending_events_.push(Event{std::move(path), EventTypeMask(static_cast<EventType>(event->mask))});
+        }
+    };
+
+    // For ev thread pool mode, do a single read; for epoll, read until no more events
+    const bool repeat = !engine::current_task::GetTaskProcessor().UseEvThreadPool();
+
+    while (true) {
+        auto len = read(fd_.GetFd(), &buff, sizeof(buff));
+        if (len < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            utils::CheckSyscall(len, "read");
+        }
+        if (len == 0) break;
+        process_buffer(len);
+        if (!repeat) break;
     }
 }
 
