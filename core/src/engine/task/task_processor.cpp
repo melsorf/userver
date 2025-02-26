@@ -657,7 +657,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 }
             }
         }
-        }
     }
 }
 #endif  // __linux__
