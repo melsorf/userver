@@ -67,11 +67,18 @@ Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
     UASSERT(fd_.GetFd() != -1);
 
     if (!use_ev_thread_pool_) {
-        engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN, [this](uint32_t events) {
-            if (events & EPOLLIN) {
-                Dispatch();
+        // Set non-blocking mode
+        int flags = fcntl(fd_.GetFd(), F_GETFL, 0);
+        utils::CheckSyscall(flags, "fcntl(F_GETFL)");
+        utils::CheckSyscall(fcntl(fd_.GetFd(), F_SETFL, flags | O_NONBLOCK), "fcntl(F_SETFL)");
+        
+        engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN | EPOLLET,
+            [this](uint32_t events) {
+                if (events & EPOLLIN) {
+                    Dispatch();
+                }
             }
-        });
+        );
     }
 }
 
@@ -143,10 +150,16 @@ void Inotify::Dispatch() {
     while (true) {
         auto len = read(fd_.GetFd(), &buff, sizeof(buff));
         if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No more data available; this is normal condition
+                // for edge-triggered mode when all data has been consumed
+                break;
+            }
             utils::CheckSyscall(len, "read");
+        } else if (len == 0) {
+            // EOF case
+            break;
         }
-        if (len == 0) break;
         process_buffer(len);
         if (!repeat) break;
     }
