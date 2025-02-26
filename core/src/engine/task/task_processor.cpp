@@ -607,8 +607,12 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             if (!opt_context.value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
-                uint64_t value = 1;
-                (void)write(event_fd_, &value, sizeof(value));
+                if (event_fd_ >= 0) {
+                    uint64_t value = 1;
+                    if (write(event_fd_, &value, sizeof(value)) != sizeof(value)) {
+                        LOG_ERROR() << "Failed to write to event_fd_";
+                    }
+                }
                 break;
             }
             got_task = true;
@@ -627,9 +631,11 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 context->FinishDetached();
             }
         }
+        // If we didn't process any tasks in this iteration, wait for events
         if (!got_task) {
-            // Wait on epoll
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+            // Wait on epoll with an infinite timeout
+            // We'll be woken up by event_fd_ when a new task is scheduled
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
             if (ready < 0) {
                 if (errno == EINTR) {
                     // Interrupted by signal, continue
