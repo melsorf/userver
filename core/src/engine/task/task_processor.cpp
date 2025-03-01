@@ -589,26 +589,12 @@ void TaskProcessor::UnregisterFd(int fd) {
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
         for (const auto event_fd : per_thread_event_fds_) {
-            if (event_fd < 0) continue;
-
             uint64_t value = 1;
-            
-            // Try multiple times to ensure delivery
-            for (int retry = 0; retry < 3; ++retry) {
-                ssize_t ret = write(event_fd, &value, sizeof(value));
-                if (ret == sizeof(value)) {
-                    break;  // Success
-                }
-                
-                // Only retry on EAGAIN, other errors are terminal
+            ssize_t ret = write(event_fd, &value, sizeof(value));
+            if (ret != sizeof(value)) {
                 if (errno != EAGAIN) {
                     LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
-                    break;
                 }
-                
-                // Small wait before retry
-                struct timespec ts = {0, 100000};  // 100 microseconds
-                nanosleep(&ts, nullptr);
             }
         }
     }
@@ -677,7 +663,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             // Drain the eventfd
         }
 
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000/*ms*/);
         if (is_shutting_down_) break;
 
         if (ready < 0) {
