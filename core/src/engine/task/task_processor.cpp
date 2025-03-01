@@ -589,12 +589,26 @@ void TaskProcessor::UnregisterFd(int fd) {
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
         for (const auto event_fd : per_thread_event_fds_) {
+            if (event_fd < 0) continue;
+
             uint64_t value = 1;
-            ssize_t ret = write(event_fd, &value, sizeof(value));
-            if (ret != sizeof(value)) {
+            
+            // Try multiple times to ensure delivery
+            for (int retry = 0; retry < 3; ++retry) {
+                ssize_t ret = write(event_fd, &value, sizeof(value));
+                if (ret == sizeof(value)) {
+                    break;  // Success
+                }
+                
+                // Only retry on EAGAIN, other errors are terminal
                 if (errno != EAGAIN) {
                     LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
+                    break;
                 }
+                
+                // Small wait before retry
+                struct timespec ts = {0, 100000};  // 100 microseconds
+                nanosleep(&ts, nullptr);
             }
         }
     }
@@ -656,27 +670,31 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (is_shutting_down_) break;
         if (got_task) continue;
 
+        // Arm the event_fd by reading any pending events before waiting
+        // This ensures we won't miss the shutdown signal
+        uint64_t buffer;
+        while (read(event_fd, &buffer, sizeof(buffer)) > 0) {
+            // Drain the eventfd
+        }
+
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
+
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             break;
         }
 
-        for (int i = 0; i < ready; ++i) {
+        for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
                 // Clear the event_fd
                 uint64_t buffer;
-                while (true) {
-                    ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                    if (ret < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                        LOG_ERROR() << "Error reading from event_fd: " << strerror(errno);
-                        break;
-                    }
+                while (read(event_fd, &buffer, sizeof(buffer)) > 0) {
+                    // Just drain it
                 }
+                // Check shutdown immediately after processing event_fd
                 if (is_shutting_down_) break;
             } else {
                 std::lock_guard<std::mutex> lock(epoll_mtx_);
