@@ -633,7 +633,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
             got_task = true;
 
-            impl::TaskContext& context = *context_ptr;
+            impl::TaskContext& context = *(context_ptr.get());
             CheckWaitTime(context);
 
             bool has_failed{false};
