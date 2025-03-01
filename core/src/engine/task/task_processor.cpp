@@ -212,7 +212,7 @@ void TaskProcessor::Cleanup() noexcept {
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
 #ifdef __linux__
-    WakeupEventLoop();
+    WakeupAllEventLoops();
 #endif  // __linux__
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
@@ -583,19 +583,32 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
     fd_callbacks_.erase(fd);
 
-    WakeupEventLoop();
+    WakeupAllEventLoops();
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!UseEvThreadPool()) {
-        uint64_t dummy;
-        for (const auto event_fd : per_thread_event_fds_) {
-            if (event_fd >= 0) {
-                while (read(event_fd, &dummy, sizeof(dummy)) > 0) {}
-                uint64_t value = 1;
-                ssize_t ret = write(event_fd, &value, sizeof(value));
-                if (ret != sizeof(value)) {
-                    LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
+    if (!UseEvThreadPool() && !per_thread_event_fds_.empty()) {
+        static std::atomic<std::size_t> next_thread_index{0};
+        const auto index = next_thread_index++ % per_thread_event_fds_.size();
+        uint64_t value = 1;
+        const int wake_fd = per_thread_event_fds_[index];
+        ssize_t ret = write(wake_fd, &value, sizeof(value));
+        if (ret != sizeof(value)) {
+            if (errno != EAGAIN) {
+                LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
+            }
+        }
+    }
+}
+
+void TaskProcessor::WakeupAllEventLoops() const {
+    if (!UseEvThreadPool() && !per_thread_event_fds_.empty()) {
+        for (const int wake_fd : per_thread_event_fds_) {
+            uint64_t value = 1;
+            ssize_t ret = write(wake_fd, &value, sizeof(value));
+            if (ret != sizeof(value)) {
+                if (errno != EAGAIN) {
+                    LOG_ERROR() << "Failed to write to event_fd during shutdown: " << strerror(errno);
                 }
             }
         }
@@ -620,7 +633,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
-
     constexpr std::size_t kMaxEvents{128};
     struct epoll_event events[kMaxEvents];
 
@@ -632,17 +644,13 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 is_shutting_down_ = true;
                 break;
             }
-
             got_task = true;
-
             if (!context_ptr.value()) {
                 LOG_ERROR() << "Got null task context";
                 continue;
             }
-
-            impl::TaskContext& context = *(context_ptr.value().get());
+            auto& context = *(context_ptr.value().get());
             CheckWaitTime(context);
-
             bool has_failed{false};
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
@@ -669,7 +677,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
-
             if (fd == event_fd) {
                 // Clear the event_fd
                 uint64_t buffer;
@@ -680,7 +687,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                         LOG_ERROR() << "Error reading from event_fd: " << strerror(errno);
                         break;
                     }
-                    if (ret == 0) break;  // No more data
                 }
             } else {
                 std::lock_guard<std::mutex> lock(epoll_mtx_);

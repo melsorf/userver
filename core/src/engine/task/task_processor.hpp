@@ -85,6 +85,8 @@ public:
     void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
     
     void WakeupEventLoop() const;
+
+    void WakeupAllEventLoops() const
 #endif // __linux__
 
 private:
