@@ -600,7 +600,7 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 }
 
-void TaskProcessor::RunEventLoop(const std::size_t index) {
+void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     const int epoll_fd = per_thread_epoll_fds_[thread_index];
     const int event_fd = per_thread_event_fds_[thread_index];
     
