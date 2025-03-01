@@ -611,12 +611,20 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         return;
     }
 
+    if (std::holds_alternative<WorkStealingTaskQueue>(task_queue_)) {
+        LOG_ERROR() << "RunEventLoop called with WorkStealingTaskQueue, falling back to ProcessTasks";
+        ProcessTasks();
+        return;
+    }
+
+    auto& queue = std::get<TaskQueue>(task_queue_);
+
     constexpr std::size_t kMaxEvents{128};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
         bool got_task = false;
-        while (auto context = std::visit([](auto&& arg) { return arg.PopNonBlocking(); }, task_queue_)) {
+        while (auto context = queue.PopNonBlocking()) {
             if (!context) {
                 // "Stop" token
                 is_shutting_down_ = true;
