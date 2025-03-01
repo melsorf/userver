@@ -152,9 +152,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
             }
-            for (auto& event_fd : per_thread_event_fds_) {
-                event_fd = CreateEventFd();
-            }
+            event_fd_ = CreateEventFd();
         }
 #endif  // __linux__
 
@@ -204,9 +202,7 @@ void TaskProcessor::Cleanup() noexcept {
         for (auto ep : per_thread_epoll_fds_) {
             if (ep >= 0) ::close(ep);
         }
-        for (auto ev : per_thread_event_fds_) {
-            if (ev >= 0) ::close(ev);
-        }
+        if (event_fd_ >= 0) ::close(event_fd_);
     }
 #endif
     UASSERT(!task_counter_.MayHaveTasksAlive());
@@ -377,16 +373,14 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
 
 #ifdef __linux__
     // Add event_fd to the epoll
-    if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size() && 
-        index < per_thread_event_fds_.size()) {
+    if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
-        const int event_fd = per_thread_event_fds_[index];
-        if (epoll_fd >= 0 && event_fd >= 0) {
+        if (epoll_fd >= 0 && event_fd_ >= 0) {
             struct epoll_event ev;
             ev.events = EPOLLIN | EPOLLET;
-            ev.data.fd = event_fd;
-            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &ev) == -1) {
-                throw utils::TracefulException("Failed to add event_fd to per-thread epoll");
+            ev.data.fd = event_fd_;
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
+                throw utils::TracefulException("Failed to add shared event_fd to per-thread epoll");
             }
         }
     }
@@ -584,23 +578,18 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!use_ev_thread_pool_) {
-        for (const auto& event_fd : per_thread_event_fds_) {
-            if (event_fd >= 0) {
-                uint64_t value = 1;
-                ssize_t ret = write(event_fd, &value, sizeof(value));
-                if (ret != sizeof(value)) {
-                    LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
-                }
-            }
+    if (!use_ev_thread_pool_ && event_fd_ >= 0) {
+        uint64_t value = 1;
+        ssize_t ret = write(event_fd_, &value, sizeof(value));
+        if (ret != sizeof(value)) {
+            LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
         }
     }
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t index) {
     const int epoll_fd = (index < per_thread_epoll_fds_.size()) ? per_thread_epoll_fds_[index] : -1;
-    const int event_fd = (index < per_thread_event_fds_.size()) ? per_thread_event_fds_[index] : -1;
-    if (epoll_fd < 0 || event_fd < 0) {
+    if (epoll_fd < 0 || event_fd_ < 0) {
         // fallback: just do tasks
         while (!is_shutting_down_) {
             ProcessTasks();
@@ -609,10 +598,10 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
     }
 
     // Make sure eventfd is set to non-blocking mode
-    int flags = fcntl(event_fd, F_GETFL, 0);
+    int flags = fcntl(event_fd_, F_GETFL, 0);
     if (flags >= 0) {
         flags |= O_NONBLOCK;
-        fcntl(event_fd, F_SETFL, flags);
+        fcntl(event_fd_, F_SETFL, flags);
     }
 
     constexpr std::size_t kMaxEvents{32};
@@ -678,16 +667,16 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 for (int i = 0; i < ready; ++i) {
                     const auto fd = events[i].data.fd;
                     
-                    if (fd == event_fd) {
-                        // Fully drain the event_fd
+                    if (fd == event_fd_) {
+                        // Fully drain the event_fd_
                         uint64_t buffer;
                         ssize_t ret;
                         do {
-                            ret = read(event_fd, &buffer, sizeof(buffer));
+                            ret = read(event_fd_, &buffer, sizeof(buffer));
                         } while (ret > 0);
                         
                         if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                            LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                            LOG_ERROR() << "Failed to read from event_fd_: " << strerror(errno);
                         }
                         
                         WakeupEventLoop();
@@ -734,16 +723,17 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             for (int i = 0; i < ready; ++i) {
                 const auto fd = events[i].data.fd;
                 
-                if (fd == event_fd) {
+                if (fd == event_fd_) {
                     // Completely drain the eventfd
                     uint64_t buffer;
                     ssize_t ret;
                     do {
-                        ret = read(event_fd, &buffer, sizeof(buffer));
+                        ret = read(event_fd_, &buffer, sizeof(buffer));
                     } while (ret > 0);
                     if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                        LOG_ERROR() << "Failed to read from event_fd_: " << strerror(errno);
                     }
+                    WakeupEventLoop();
                 } else {
                     uint32_t event_mask = events[i].events;
                     std::function<void(uint32_t)> callback;
