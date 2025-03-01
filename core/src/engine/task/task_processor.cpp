@@ -376,7 +376,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && event_fd_ >= 0) {
             struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET;
+            ev.events = EPOLLIN;
             ev.data.fd = event_fd_;
             if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
                 throw utils::TracefulException("Failed to add event_fd_ to per-thread epoll");
@@ -632,7 +632,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         if (got_task) continue;
         // If we didn't process any tasks in this iteration, wait for events
         // We'll be woken up by event_fd_ when a new task is scheduled
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (ready < 0) {
             if (errno == EINTR) continue;
             throw utils::TracefulException("epoll_wait failed");
