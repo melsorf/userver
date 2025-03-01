@@ -608,13 +608,21 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         return;
     }
 
+    // Make sure eventfd is set to non-blocking mode
+    int flags = fcntl(event_fd, F_GETFL, 0);
+    if (flags >= 0) {
+        flags |= O_NONBLOCK;
+        fcntl(event_fd, F_SETFL, flags);
+    }
+
     constexpr std::size_t kMaxEvents{32};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        // First, try to process all available tasks
         bool processed_tasks = false;
+        bool has_pending_events = false;
         
+        // Process as many tasks as available first
         do {
             processed_tasks = false;
             
@@ -652,10 +660,8 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 if (has_failed || context->IsFinished()) {
                     context->FinishDetached();
                 }
+                if (is_shutting_down_) break;
             }
-            
-            if (is_shutting_down_) break;
-
             // Non-blocking check for events
             // This ensures we don't miss any events that might have occurred
             // while we were processing tasks
@@ -666,9 +672,10 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
                 continue;
             }
+
+            has_pending_events = (ready > 0);
             
-            // If we got events, process them
-            if (ready > 0) {
+            if (has_pending_events) {
                 std::lock_guard<std::mutex> lock(epoll_mtx_);
                 for (int i = 0; i < ready; ++i) {
                     const auto fd = events[i].data.fd;
@@ -676,21 +683,17 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                     if (fd == event_fd) {
                         // Fully drain the event_fd
                         uint64_t buffer;
-                        while (true) {
-                            ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                            if (ret < 0) {
-                                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                                LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                                break;
-                            }
-                            
-                            // We processed an event - there may be new tasks
-                            processed_tasks = true;
-                            
-                            if (is_shutting_down_) break;
+                        ssize_t ret;
+                        do {
+                            ret = read(event_fd, &buffer, sizeof(buffer));
+                        } while (ret > 0);
+                        
+                        if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                            LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                         }
                         
-                        if (is_shutting_down_) break;
+                        // Check for tasks that may have been added during event processing
+                        processed_tasks = true;
                     } else {
                         auto it = fd_callbacks_.find(fd);
                         if (it != fd_callbacks_.end()) {
@@ -698,11 +701,12 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                             auto callback = it->second;
                             auto event_mask = events[i].events;
                             
-                            // Release the lock before calling the callback
+                            // Release the lock before calling the callback to prevent deadlock
                             lock.~lock_guard();
                             
                             try {
                                 callback(event_mask);
+                                processed_tasks = true;  // Callback may have scheduled tasks
                             } catch (const std::exception& ex) {
                                 LOG_ERROR() << "Exception in fd callback: " << ex;
                             } catch (...) {
@@ -717,7 +721,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                     if (is_shutting_down_) break;
                 }
             }
-        } while (processed_tasks && !is_shutting_down_);
+        } while ((processed_tasks || has_pending_events) && !is_shutting_down_);
         
         if (is_shutting_down_) break;
         
@@ -738,20 +742,16 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                 const auto fd = events[i].data.fd;
                 
                 if (fd == event_fd) {
-                    // Fully drain the event_fd
+                    // Completely drain the eventfd
                     uint64_t buffer;
-                    while (true) {
-                        ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                        if (ret < 0) {
-                            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                            LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                            break;
-                        }
-                        
-                        if (is_shutting_down_) break;
-                    }
+                    ssize_t ret;
+                    do {
+                        ret = read(event_fd, &buffer, sizeof(buffer));
+                    } while (ret > 0);
                     
-                    if (is_shutting_down_) break;
+                    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                    }
                 } else {
                     auto it = fd_callbacks_.find(fd);
                     if (it != fd_callbacks_.end()) {
