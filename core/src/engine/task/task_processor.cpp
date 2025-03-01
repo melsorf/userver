@@ -110,12 +110,6 @@ bool PlatformSupportsEpollet() {
 }
 
 #ifdef __linux__
-std::atomic<bool> g_use_ev_thread_pool{false};
-
-bool TaskProcessor::UseEvThreadPool() {
-    return g_use_ev_thread_pool.load(std::memory_order_relaxed);
-}
-
 int CreateEpollFd() {
     int fd = epoll_create1(0);
     if (fd == -1) {

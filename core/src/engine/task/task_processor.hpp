@@ -77,7 +77,7 @@ public:
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
 #ifdef __linux__
-    static bool UseEvThreadPool();
+    static bool UseEvThreadPool() noexcept { return use_ev_thread_pool; }
 
     void RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
         RegisterFd(fd, events, std::move(callback));
@@ -148,6 +148,7 @@ private:
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
 
 #ifdef __linux__
+    static inline bool use_ev_thread_pool{false};
     int event_fd_{-1};
     std::mutex epoll_mtx_;
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
