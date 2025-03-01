@@ -86,7 +86,7 @@ public:
     
     void WakeupEventLoop() const;
 
-    void WakeupAllEventLoops() const
+    void WakeupAllEventLoops() const;
 #endif // __linux__
 
 private:
