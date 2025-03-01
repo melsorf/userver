@@ -131,9 +131,12 @@ int CreateEventFd() {
 
 TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::TaskProcessorPools> pools)
     : task_queue_(MakeTaskQueue(config)),
-      task_counter_(config.worker_threads),
-      config_(std::move(config)),
-      pools_(std::move(pools))
+    task_counter_(config.worker_threads),
+    config_(std::move(config)),
+    pools_(std::move(pools))
+#ifdef __linux__
+    , use_ev_thread_pool_(!PlatformSupportsEpollet())
+#endif // __linux__
 {
     utils::impl::FinishStaticRegistration();
 
@@ -142,7 +145,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
 
 #ifdef __linux__
-        g_use_ev_thread_pool.store(!PlatformSupportsEpollet(), std::memory_order_relaxed);
         if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             for (auto& epoll_fd : per_thread_epoll_fds_) {
