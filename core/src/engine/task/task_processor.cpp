@@ -373,7 +373,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     TaskProcessorThreadStartedHook();
 
 #ifdef __linux__
-    // Add event_fd_ to the epoll
+    // Add event_fd to the epoll
     if (!UseEvThreadPool() && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
@@ -587,7 +587,7 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!UseEvThreadPool() && event_fd_ >= 0) {
+    if (!UseEvThreadPool()) {
         uint64_t value = 1;
         for (const auto event_fd : per_thread_event_fds_) {
             if (event_fd >= 0) {
@@ -653,11 +653,11 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
 
-            if (fd == event_fd_) {
-                // Clear the event_fd_
+            if (fd == event_fd) {
+                // Clear the event_fd
                 uint64_t buffer;
                 while (true) {
-                    ssize_t ret = read(event_fd_, &buffer, sizeof(buffer));
+                    ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
                     if (ret < 0) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                         LOG_ERROR() << "Error reading from event_fd: " << strerror(errno);
