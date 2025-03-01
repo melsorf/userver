@@ -70,7 +70,7 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
 
     const bool is_et_mode =
 #ifdef __linux__
-        !task_processor::UseEvThreadPool();
+        !TaskProcessor::UseEvThreadPool();
 #else
         false;
 #endif
