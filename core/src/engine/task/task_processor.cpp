@@ -624,27 +624,29 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
     while (!is_shutting_down_) {
         bool got_task = false;
-        while (auto context = queue.PopNonBlocking()) {
-            if (!context) {
+        while (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr) {
                 // "Stop" token
                 is_shutting_down_ = true;
                 break;
             }
 
             got_task = true;
-            CheckWaitTime(*context);
+
+            impl::TaskContext& context = *context_ptr;
+            CheckWaitTime(context);
 
             bool has_failed{false};
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context->DoStep();
+                context.DoStep();
             } catch (...) {
                 LOG_ERROR() << "unhandled exception from DoStep()";
                 has_failed = true;
             }
             pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
+            if (has_failed || context.IsFinished()) {
+                context.FinishDetached();
             }
         }
 
