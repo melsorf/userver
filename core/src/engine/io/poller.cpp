@@ -9,7 +9,6 @@
 
 #include <engine/ev/thread_control.hpp>
 #include <engine/ev/watcher.hpp>
-#include <engine/task/task_processor.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -74,14 +73,11 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
 #else
         false;
 #endif
-
+    
     watcher.ev_watcher.RunInBoundEvLoopAsync(
         [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events), is_et_mode] {
             // watcher lifetime is guarded by ev_watcher dtor
-            // in epollet mode we have to stop the watcher before changing events
-            if (is_et_mode) {
-                watcher.ev_watcher.Stop();
-            } else if (should_stop) {
+            if (should_stop && !is_et_mode) {
                 watcher.ev_watcher.Stop();
             }
             ++watcher.ev_epoch;
@@ -180,7 +176,15 @@ void Poller::IoWatcher::IoEventCb(struct ev_loop*, ev_io* watcher, int revents) 
         watcher_meta->poller.event_producer_.PushNoblock({watcher->fd, FromEvEvents(revents), ev_epoch});
     UASSERT(is_sent);
 
-    watcher_meta->ev_watcher.Stop();
+#ifdef __linux__
+    if (!TaskProcessor::UseEvThreadPool()) {
+        watcher_meta->ev_watcher.StartAsync();
+    } else {
+#endif  // __linux_
+        watcher_meta->ev_watcher.Stop();
+#ifdef __linux__
+    }
+#endif  // __linux_
 }
 
 Poller::IoWatcher::IoWatcher(Poller& owner)
