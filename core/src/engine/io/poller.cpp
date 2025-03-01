@@ -9,7 +9,6 @@
 
 #include <engine/ev/thread_control.hpp>
 #include <engine/ev/watcher.hpp>
-#include <engine/task/task_processor.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -67,20 +66,10 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
     if (old_events == events) return;
 
     ++watcher.coro_epoch;
-
-    const bool is_et_mode =
-#ifdef __linux__
-        !TaskProcessor::UseEvThreadPool();
-#else
-        false;
-#endif
-    
     watcher.ev_watcher.RunInBoundEvLoopAsync(
-        [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events), is_et_mode] {
+        [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events)] {
             // watcher lifetime is guarded by ev_watcher dtor
-            if (should_stop || is_et_mode) {
-                watcher.ev_watcher.Stop();
-            }
+            if (should_stop) watcher.ev_watcher.Stop();
             ++watcher.ev_epoch;
             if (ev_events && watcher.ev_epoch == watcher.coro_epoch) {
                 watcher.ev_watcher.Set(fd, ev_events);
@@ -177,15 +166,7 @@ void Poller::IoWatcher::IoEventCb(struct ev_loop*, ev_io* watcher, int revents) 
         watcher_meta->poller.event_producer_.PushNoblock({watcher->fd, FromEvEvents(revents), ev_epoch});
     UASSERT(is_sent);
 
-#ifdef __linux__
-    if (!TaskProcessor::UseEvThreadPool()) {
-        watcher_meta->ev_watcher.StartAsync();
-    } else {
-#endif  // __linux_
-        watcher_meta->ev_watcher.Stop();
-#ifdef __linux__
-    }
-#endif  // __linux_
+    watcher_meta->ev_watcher.Stop();
 }
 
 Poller::IoWatcher::IoWatcher(Poller& owner)
