@@ -78,7 +78,7 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
     watcher.ev_watcher.RunInBoundEvLoopAsync(
         [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events), is_et_mode] {
             // watcher lifetime is guarded by ev_watcher dtor
-            if (should_stop && !is_et_mode) {
+            if (should_stop || is_et_mode) {
                 watcher.ev_watcher.Stop();
             }
             ++watcher.ev_epoch;
