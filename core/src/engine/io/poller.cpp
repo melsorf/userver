@@ -68,7 +68,12 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
 
     ++watcher.coro_epoch;
 
-    const bool is_et_mode = !task_processor::UseEvThreadPool();
+    const bool is_et_mode =
+#ifdef __linux__
+        !task_processor::UseEvThreadPool();
+#else
+        false;
+#endif
 
     watcher.ev_watcher.RunInBoundEvLoopAsync(
         [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events), is_et_mode] {
