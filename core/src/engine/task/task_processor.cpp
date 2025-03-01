@@ -110,6 +110,12 @@ bool PlatformSupportsEpollet() {
 }
 
 #ifdef __linux__
+std::atomic<bool> g_use_ev_thread_pool{false};
+
+bool TaskProcessor::UseEvThreadPool() noexcept {
+    return g_use_ev_thread_pool.load(std::memory_order_relaxed);
+}
+
 int CreateEpollFd() {
     int fd = epoll_create1(0);
     if (fd == -1) {
@@ -134,10 +140,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
       task_counter_(config.worker_threads),
       config_(std::move(config)),
       pools_(std::move(pools))
-#ifdef __linux__
-      ,
-      use_ev_thread_pool_(!PlatformSupportsEpollet())
-#endif  // __linux__
 {
     utils::impl::FinishStaticRegistration();
 
@@ -146,7 +148,8 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
 
 #ifdef __linux__
-        if (!use_ev_thread_pool_) {
+        g_use_ev_thread_pool.store(!PlatformSupportsEpollet(), std::memory_order_relaxed);
+        if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
@@ -163,7 +166,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                 workers_left.count_down();
 
 #ifdef __linux__
-                if (use_ev_thread_pool_) {
+                if (UseEvThreadPool()) {
                     ProcessTasks();
                 } else {
                     RunEventLoop(i);
@@ -197,7 +200,7 @@ void TaskProcessor::Cleanup() noexcept {
         w.join();
     }
 #ifdef __linux__
-    if (!use_ev_thread_pool_) {
+    if (!UseEvThreadPool()) {
         for (auto ep : per_thread_epoll_fds_) {
             if (ep >= 0) ::close(ep);
         }
@@ -372,7 +375,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
 
 #ifdef __linux__
     // Add event_fd_ to the epoll
-    if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size()) {
+    if (!UseEvThreadPool() && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && event_fd_ >= 0) {
             struct epoll_event ev;
@@ -522,7 +525,7 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (use_ev_thread_pool_) return 0;
+    if (UseEvThreadPool()) return 0;
 
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
@@ -547,7 +550,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
 }
 
 void TaskProcessor::UnregisterFd(int fd) {
-    if (use_ev_thread_pool_) return;
+    if (UseEvThreadPool()) return;
 
     std::size_t index;
     {
@@ -577,7 +580,7 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!use_ev_thread_pool_ && event_fd_ >= 0) {
+    if (!UseEvThreadPool() && event_fd_ >= 0) {
         uint64_t value = 1;
         ssize_t ret = write(event_fd_, &value, sizeof(value));
         if (ret != sizeof(value)) {
