@@ -666,7 +666,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             // This ensures we don't miss any events that might have occurred
             // while we were processing tasks
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0);
-            
             if (ready < 0) {
                 if (errno == EINTR) continue;
                 LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
@@ -676,7 +675,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             has_pending_events = (ready > 0);
             
             if (has_pending_events) {
-                std::lock_guard<std::mutex> lock(epoll_mtx_);
                 for (int i = 0; i < ready; ++i) {
                     const auto fd = events[i].data.fd;
                     
@@ -695,29 +693,25 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                         // Check for tasks that may have been added during event processing
                         processed_tasks = true;
                     } else {
-                        auto it = fd_callbacks_.find(fd);
-                        if (it != fd_callbacks_.end()) {
-                            // Make a copy of the callback to invoke outside the lock
-                            auto callback = it->second;
-                            auto event_mask = events[i].events;
-                            
-                            // Release the lock before calling the callback to prevent deadlock
-                            lock.~lock_guard();
-                            
+                        uint32_t event_mask = events[i].events;
+                        std::function<void(uint32_t)> callback;
+                        {
+                            std::lock_guard<std::mutex> lock(epoll_mtx_);
+                            auto it = fd_callbacks_.find(fd);
+                            if (it != fd_callbacks_.end()) {
+                                callback = it->second;
+                            }
+                        }
+                        if (callback) {
                             try {
                                 callback(event_mask);
-                                processed_tasks = true;  // Callback may have scheduled tasks
                             } catch (const std::exception& ex) {
                                 LOG_ERROR() << "Exception in fd callback: " << ex;
                             } catch (...) {
                                 LOG_ERROR() << "Unknown exception in fd callback";
                             }
-                            
-                            // Reacquire the lock
-                            new (&lock) std::lock_guard<std::mutex>(epoll_mtx_);
                         }
                     }
-                    
                     if (is_shutting_down_) break;
                 }
             }
@@ -734,10 +728,8 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             continue;
         }
-        
         // Process the events that woke us up
         if (ready > 0) {
-            std::lock_guard<std::mutex> lock(epoll_mtx_);
             for (int i = 0; i < ready; ++i) {
                 const auto fd = events[i].data.fd;
                 
@@ -748,18 +740,20 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                     do {
                         ret = read(event_fd, &buffer, sizeof(buffer));
                     } while (ret > 0);
-                    
                     if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                         LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                     }
                 } else {
-                    auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        auto callback = it->second;
-                        auto event_mask = events[i].events;
-                        
-                        lock.~lock_guard();
-                        
+                    uint32_t event_mask = events[i].events;
+                    std::function<void(uint32_t)> callback;
+                    {
+                        std::lock_guard<std::mutex> lock(epoll_mtx_);
+                        auto it = fd_callbacks_.find(fd);
+                        if (it != fd_callbacks_.end()) {
+                            callback = it->second;
+                        }
+                    }
+                    if (callback) {
                         try {
                             callback(event_mask);
                         } catch (const std::exception& ex) {
@@ -767,8 +761,6 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                         } catch (...) {
                             LOG_ERROR() << "Unknown exception in fd callback";
                         }
-                        
-                        new (&lock) std::lock_guard<std::mutex>(epoll_mtx_);
                     }
                 }
                 
