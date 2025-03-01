@@ -149,7 +149,6 @@ private:
 
 #ifdef __linux__
     bool use_ev_thread_pool_{false};
-    int event_fd_{-1};
     std::mutex epoll_mtx_;
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
     std::vector<int> per_thread_epoll_fds_;
