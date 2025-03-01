@@ -527,7 +527,9 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
     {
         std::lock_guard<std::mutex> lock(epoll_mtx_);
         if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
-            throw utils::TracefulException("Failed to add fd to per-thread epoll");
+            if (errno != EEXIST) {
+                throw utils::TracefulException("Failed to add event_fd_ to epoll");
+            }
         }
         fd_callbacks_[fd] = std::move(callback);
     }
