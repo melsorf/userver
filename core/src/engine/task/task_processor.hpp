@@ -153,6 +153,7 @@ private:
     std::mutex epoll_mtx_;
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
     std::vector<int> per_thread_epoll_fds_;
+    std::vector<int> per_thread_event_fds_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
 #endif  // __linux__
