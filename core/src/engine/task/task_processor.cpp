@@ -633,12 +633,12 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 break;
             }
 
+            got_task = true;
+
             if (!context_ptr.value()) {
                 LOG_ERROR() << "Got null task context";
                 continue;
             }
-
-            got_task = true;
 
             impl::TaskContext& context = *(context_ptr.value().get());
             CheckWaitTime(context);
