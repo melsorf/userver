@@ -85,6 +85,8 @@ public:
     void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
     
     void WakeupEventLoop() const;
+
+    void WakeupAllEventLoops() const;
 #endif // __linux__
 
 private:
@@ -151,7 +153,7 @@ private:
     static inline bool use_ev_thread_pool_{false};
     std::mutex epoll_mtx_;
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
-    int event_fd_{-1}; // EFD_NONBLOCK|EFD_CLOEXEC
+    std::vector<int> per_thread_event_fds_;
     std::vector<int> per_thread_epoll_fds_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
