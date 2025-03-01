@@ -690,7 +690,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                             LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                         }
                         
-                        // Check for tasks that may have been added during event processing
+                        WakeupEventLoop();
                         processed_tasks = true;
                     } else {
                         uint32_t event_mask = events[i].events;
@@ -728,6 +728,7 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             continue;
         }
+        if (is_shutting_down_) break;
         // Process the events that woke us up
         if (ready > 0) {
             for (int i = 0; i < ready; ++i) {
