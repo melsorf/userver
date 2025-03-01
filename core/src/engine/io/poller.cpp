@@ -66,10 +66,18 @@ void Poller::Add(int fd, utils::Flags<Event::Type> events) {
     if (old_events == events) return;
 
     ++watcher.coro_epoch;
+
+    const bool is_et_mode = !task_processor::UseEvThreadPool();
+
     watcher.ev_watcher.RunInBoundEvLoopAsync(
-        [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events)] {
+        [&watcher, fd, should_stop = !!old_events, ev_events = ToEvEvents(events), is_et_mode] {
             // watcher lifetime is guarded by ev_watcher dtor
-            if (should_stop) watcher.ev_watcher.Stop();
+            // in epollet mode we have to stop the watcher before changing events
+            if (is_et_mode) {
+                watcher.ev_watcher.Stop();
+            } else if (should_stop) {
+                watcher.ev_watcher.Stop();
+            }
             ++watcher.ev_epoch;
             if (ev_events && watcher.ev_epoch == watcher.coro_epoch) {
                 watcher.ev_watcher.Set(fd, ev_events);
