@@ -212,7 +212,7 @@ void TaskProcessor::Cleanup() noexcept {
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
 #ifdef __linux__
-    WakeupAllEventLoops();
+    WakeupEventLoop();
 #endif  // __linux__
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
@@ -583,32 +583,17 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
     fd_callbacks_.erase(fd);
 
-    WakeupAllEventLoops();
+    WakeupEventLoop();
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!UseEvThreadPool() && !per_thread_event_fds_.empty()) {
-        static std::atomic<std::size_t> next_thread_index{0};
-        const auto index = next_thread_index++ % per_thread_event_fds_.size();
-        uint64_t value = 1;
-        const int wake_fd = per_thread_event_fds_[index];
-        ssize_t ret = write(wake_fd, &value, sizeof(value));
-        if (ret != sizeof(value)) {
-            if (errno != EAGAIN) {
-                LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
-            }
-        }
-    }
-}
-
-void TaskProcessor::WakeupAllEventLoops() const {
-    if (!UseEvThreadPool() && !per_thread_event_fds_.empty()) {
-        for (const int wake_fd : per_thread_event_fds_) {
+    if (!UseEvThreadPool()) {
+        for (const auto event_fd : per_thread_event_fds_) {
             uint64_t value = 1;
-            ssize_t ret = write(wake_fd, &value, sizeof(value));
+            ssize_t ret = write(event_fd, &value, sizeof(value));
             if (ret != sizeof(value)) {
                 if (errno != EAGAIN) {
-                    LOG_ERROR() << "Failed to write to event_fd during shutdown: " << strerror(errno);
+                    LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
                 }
             }
         }
@@ -633,6 +618,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
+
     constexpr std::size_t kMaxEvents{128};
     struct epoll_event events[kMaxEvents];
 
@@ -651,6 +637,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
             auto& context = *(context_ptr.value().get());
             CheckWaitTime(context);
+
             bool has_failed{false};
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
@@ -669,6 +656,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (got_task) continue;
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        if (is_shutting_down_) break;
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
