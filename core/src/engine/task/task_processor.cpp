@@ -148,7 +148,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
 #ifdef __linux__
         if (!use_ev_thread_pool_) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
-            per_thread_event_fds_.resize(config_.worker_threads, -1);
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
             }
