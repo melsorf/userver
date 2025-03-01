@@ -588,9 +588,11 @@ void TaskProcessor::UnregisterFd(int fd) {
 
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
-        uint64_t value = 1;
+        uint64_t dummy;
         for (const auto event_fd : per_thread_event_fds_) {
             if (event_fd >= 0) {
+                while (read(event_fd, &dummy, sizeof(dummy)) > 0) {}
+                uint64_t value = 1;
                 ssize_t ret = write(event_fd, &value, sizeof(value));
                 if (ret != sizeof(value)) {
                     LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
