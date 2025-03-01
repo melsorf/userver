@@ -616,7 +616,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
     while (!is_shutting_down_) {
         bool got_task = false;
-        while (auto context = std::visit([](auto&& arg) { return arg.PopNonblocking(); }, task_queue_)) {
+        while (auto context = std::visit([](auto&& arg) { return arg.PopNonBlocking(); }, task_queue_)) {
             if (!context) {
                 // "Stop" token
                 is_shutting_down_ = true;
