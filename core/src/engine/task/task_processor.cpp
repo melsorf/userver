@@ -109,24 +109,6 @@ bool PlatformSupportsEpollet() {
 #endif  // __linux__
 }
 
-#ifdef __linux__
-int CreateEpollFd() {
-    int fd = epoll_create1(0);
-    if (fd == -1) {
-        throw utils::TracefulException("Failed to create epoll instance");
-    }
-    return fd;
-}
-
-int CreateEventFd() {
-    int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (fd == -1) {
-        throw utils::TracefulException("Failed to create eventfd");
-    }
-    return fd;
-}
-#endif  // __linux__
-
 }  // namespace
 
 TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::TaskProcessorPools> pools)
@@ -144,13 +126,14 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
 #ifdef __linux__
         use_ev_thread_pool_ = !PlatformSupportsEpollet();
         if (!UseEvThreadPool()) {
+            event_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
             per_thread_epoll_fds_.resize(config_.worker_threads);
-            per_thread_event_fds_.resize(config_.worker_threads, -1);
-            for (auto& epoll_fd : per_thread_epoll_fds_) {
-                epoll_fd = CreateEpollFd();
-            }
-            for (auto& event_fd : per_thread_event_fds_) {
-                event_fd = CreateEventFd();
+            for (std::size_t i = 0; i < config_.worker_threads; ++i) {
+                per_thread_epoll_fds_[i] = epoll_create1(0);
+                struct epoll_event ev;
+                ev.events = EPOLLIN | EPOLLET;
+                ev.data.fd = event_fd_;
+                epoll_ctl(per_thread_epoll_fds_[i], EPOLL_CTL_ADD, event_fd_, &ev);
             }
         }
 #endif  // __linux__
@@ -201,8 +184,9 @@ void TaskProcessor::Cleanup() noexcept {
         for (auto ep : per_thread_epoll_fds_) {
             if (ep >= 0) ::close(ep);
         }
-        for (auto event_fd : per_thread_event_fds_) {
-            if (event_fd >= 0) ::close(event_fd);
+        if (event_fd_ >= 0) {
+            ::close(event_fd_);
+            event_fd_ = -1;
         }
     }
 #endif
@@ -376,19 +360,19 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     // Add event_fd to the epoll
     if (!UseEvThreadPool() && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
-        if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
+        if (epoll_fd >= 0 && event_fd_ >= 0) {
             struct epoll_event ev;
             ev.events = EPOLLIN | EPOLLET;
-            ev.data.fd = per_thread_event_fds_[index];
-            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, per_thread_event_fds_[index], &ev) == -1) {
-                throw utils::TracefulException("Failed to add event_fd to epoll");
+            ev.data.fd = event_fd_;
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd_, &ev) == -1) {
+                throw utils::TracefulException("Failed to add event_fd_ to epoll");
             }
 
-            int flags = fcntl(per_thread_event_fds_[index], F_GETFL, 0);
+            int flags = fcntl(event_fd_, F_GETFL, 0);
             if (flags == -1) {
                 throw utils::TracefulException("Failed to get event_fd flags");
             }
-            if (fcntl(per_thread_event_fds_[index], F_SETFL, flags | O_NONBLOCK) == -1) {
+            if (fcntl(event_fd_, F_SETFL, flags | O_NONBLOCK) == -1) {
                 throw utils::TracefulException("Failed to set event_fd to non-blocking mode");
             }
         }
@@ -588,23 +572,15 @@ void TaskProcessor::UnregisterFd(int fd) {
 
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
-        for (const auto event_fd : per_thread_event_fds_) {
-            uint64_t value = 1;
-            ssize_t ret = write(event_fd, &value, sizeof(value));
-            if (ret != sizeof(value)) {
-                if (errno != EAGAIN) {
-                    LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
-                }
-            }
-        }
+        uint64_t value = 1;
+        write(event_fd_, &value, sizeof(value));
     }
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     const int epoll_fd = per_thread_epoll_fds_[thread_index];
-    const int event_fd = per_thread_event_fds_[thread_index];
     
-    if (epoll_fd < 0 || event_fd < 0) {
+    if (epoll_fd < 0) {
         LOG_ERROR() << "Invalid epoll or event fd for thread " << thread_index;
         // fallback: just do tasks
         ProcessTasks();
@@ -665,17 +641,10 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
-            if (fd == event_fd) {
-                // Clear the event_fd
+            if (fd == event_fd_) {
+                // Clear the event_fd_
                 uint64_t buffer;
-                while (true) {
-                    ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                    if (ret < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                        LOG_ERROR() << "Error reading from event_fd: " << strerror(errno);
-                        break;
-                    }
-                }
+                while (read(event_fd_, &buffer, sizeof(buffer)) > 0) {}
             } else {
                 std::lock_guard<std::mutex> lock(epoll_mtx_);
                 auto callback_it = fd_callbacks_.find(fd);
