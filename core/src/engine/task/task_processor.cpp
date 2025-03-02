@@ -628,7 +628,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
+        bool processed_tasks = false;
         while (auto context_ptr = queue.PopNonBlocking()) {
+            processed_tasks = true;
             if (!context_ptr.has_value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
@@ -656,7 +658,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (is_shutting_down_) break;
         
         // Check again for tasks before going to epoll_wait
-        {
+        if (processed_tasks) {
             auto context_ptr = queue.PopNonBlocking();
             if (context_ptr.has_value()) {
                 if (!context_ptr.value()) {
@@ -666,7 +668,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 }
                 
                 // Put it back and continue processing from the top
-                // This is a bit inefficient but ensures we don't miss anything
                 if (context_ptr.value()) {
                     queue.Push(std::move(context_ptr.value()));
                 }
@@ -675,16 +676,20 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         // Always drain event_fd before epoll_wait to avoid missing events
+        bool event_fd_had_data = false;
         {
             uint64_t buffer;
             ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
             if (ret > 0) {
-                // Data was in the event_fd, go back and check for tasks
-                continue;
+                // Go back and check for tasks
+                event_fd_had_data = true;
             } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                 LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
             }
         }
+
+        // If we had data in event_fd, check for tasks again
+        if (event_fd_had_data) continue;
 
         if (is_shutting_down_) break;
 
