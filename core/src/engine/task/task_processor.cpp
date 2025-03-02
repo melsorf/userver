@@ -686,8 +686,13 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
+                // Drain the event_fd
                 uint64_t buffer;
-                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
+                ssize_t ret;
+                do {
+                    ret = read(event_fd, &buffer, sizeof(buffer));
+                } while (ret > 0);
+                
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
