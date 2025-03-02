@@ -382,7 +382,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
             struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET;
+            ev.events = EPOLLIN;
             ev.data.fd = per_thread_event_fds_[index];
             if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, per_thread_event_fds_[index], &ev) == -1) {
                 throw utils::TracefulException("Failed to add event_fd to epoll");
@@ -672,29 +672,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 continue;
             }
         }
-
-        // Always drain event_fd before epoll_wait to avoid missing events
-        bool had_events = false;
-        {
-            uint64_t buffer;
-            
-            while (true) {
-                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                if (ret > 0) {
-                    had_events = true;
-                } else if (ret < 0) {
-                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                    }
-                    break;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        // If we had events, there might be new tasks, check the queue again
-        if (had_events) continue;
 
         if (is_shutting_down_) break;
 
