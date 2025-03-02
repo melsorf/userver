@@ -607,12 +607,21 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
         }
         return;
     }
+    
+    if (std::holds_alternative<WorkStealingTaskQueue>(task_queue_)) {
+        LOG_ERROR() << "RunEventLoop called with WorkStealingTaskQueue, falling back to ProcessTasks";
+        while (!is_shutting_down_) {
+            ProcessTasks();
+        }
+        return;
+    }
+
+    auto& queue = std::get<TaskQueue>(task_queue_);
 
     // Make sure eventfd is set to non-blocking mode
     int flags = fcntl(event_fd, F_GETFL, 0);
     if (flags >= 0) {
-        flags |= O_NONBLOCK;
-        fcntl(event_fd, F_SETFL, flags);
+        fcntl(event_fd, F_SETFL, flags | O_NONBLOCK);
     }
 
     constexpr std::size_t kMaxEvents{32};
@@ -620,115 +629,60 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
 
     while (!is_shutting_down_) {
         bool processed_tasks = false;
-        bool has_pending_events = false;
         
         // Process as many tasks as available first
-        do {
-            processed_tasks = false;
-            
-            // Process all available tasks before waiting
-            while (!is_shutting_down_) {
-                auto opt_context = std::get<TaskQueue>(task_queue_).PopNonBlocking();
-                if (!opt_context.has_value()) {
-                    // No tasks available
-                    break;
-                }
-                
-                if (!opt_context.value()) {
-                    // "Stop" token
-                    is_shutting_down_ = true;
-                    break;
-                }
-                
-                processed_tasks = true;
-                auto context = opt_context.value();
-                bool has_failed{false};
-                CheckWaitTime(*context);
-                
-                try {
-                    impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                    context->DoStep();
-                } catch (const std::exception& ex) {
-                    LOG_ERROR() << "unhandled exception from DoStep(): " << ex;
-                    has_failed = true;
-                } catch (...) {
-                    LOG_ERROR() << "unhandled unknown exception from DoStep()";
-                    has_failed = true;
-                }
-                
-                pools_->GetCoroPool().AccountStackUsage();
-                if (has_failed || context->IsFinished()) {
-                    context->FinishDetached();
-                }
-                if (is_shutting_down_) break;
-            }
-            // Non-blocking check for events
-            // This ensures we don't miss any events that might have occurred
-            // while we were processing tasks
-            int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0);
-            
-            if (ready < 0) {
-                if (errno == EINTR) continue;
-                LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-                continue;
-            }
+        processed_tasks = false;
 
-            has_pending_events = (ready > 0);
-            
-            if (has_pending_events) {
-                std::unique_lock<std::mutex> lock(epoll_mtx_);
-                for (int i = 0; i < ready; ++i) {
-                    const auto fd = events[i].data.fd;
-                    
-                    if (fd == event_fd) {
-                        // Fully drain the event_fd
-                        uint64_t buffer;
-                        ssize_t ret;
-                        do {
-                            ret = read(event_fd, &buffer, sizeof(buffer));
-                        } while (ret > 0);
-                        
-                        if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                            LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                        }
-                        
-                        // Check for tasks that may have been added during event processing
-                        processed_tasks = true;
-                    } else {
-                        auto it = fd_callbacks_.find(fd);
-                        if (it != fd_callbacks_.end()) {
-                            // Make a copy of the callback to invoke outside the lock
-                            auto callback = it->second;
-                            auto event_mask = events[i].events;
-                            lock.unlock();
-                            try {
-                                callback(event_mask);
-                                processed_tasks = true;  // Callback may have scheduled tasks
-                            } catch (const std::exception& ex) {
-                                LOG_ERROR() << "Exception in fd callback: " << ex;
-                            } catch (...) {
-                                LOG_ERROR() << "Unknown exception in fd callback";
-                            }
-                            lock.lock();
-                        }
-                    }
-                    
-                    if (is_shutting_down_) break;
-                }
+        while (!is_shutting_down_) {
+            auto opt_context = queue.PopNonBlocking();
+            if (!opt_context.has_value()) {
+                // No tasks available
+                break;
             }
-        } while ((processed_tasks || has_pending_events) && !is_shutting_down_);
-        
+            
+            if (!opt_context.value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
+            }
+            
+            processed_tasks = true;
+            auto context = opt_context.value();
+            bool has_failed = false;
+            CheckWaitTime(*context);
+
+            try {
+                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                context->DoStep();
+            } catch (const std::exception& ex) {
+                LOG_ERROR() << "unhandled exception from DoStep(): " << ex;
+                has_failed = true;
+            } catch (...) {
+                LOG_ERROR() << "unhandled unknown exception from DoStep()";
+                has_failed = true;
+            }
+            
+            pools_->GetCoroPool().AccountStackUsage();
+            if (has_failed || context->IsFinished()) {
+                context->FinishDetached();
+            }
+        }
         if (is_shutting_down_) break;
-        
-        // There are no tasks and we've processed all pending events
-        // Now blocking wait for new events
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+
+        // If we processed some tasks, check for more before blocking
+        if (processed_tasks) continue;
+
+        // Non-blocking check for events
+        // This ensures we don't miss any events that might have occurred
+        // while we were processing tasks
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0);
+            
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             continue;
         }
-        
+
         // Process the events that woke us up
         if (ready > 0) {
             std::unique_lock<std::mutex> lock(epoll_mtx_);
@@ -762,6 +716,51 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
                     }
                 }
                 
+                if (is_shutting_down_) break;
+            }
+        }
+        // No tasks and no pending events - block waiting for events
+        ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        if (is_shutting_down_) break;
+        
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
+            continue;
+        }
+
+        // Process events
+        if (ready > 0) {
+            std::unique_lock<std::mutex> lock(epoll_mtx_);
+            for (int i = 0; i < ready; ++i) {
+                const auto fd = events[i].data.fd;
+                
+                if (fd == event_fd) {
+                    uint64_t buffer;
+                    ssize_t ret;
+                    do {
+                        ret = read(event_fd, &buffer, sizeof(buffer));
+                    } while (ret > 0);
+                    
+                    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                    }
+                } else {
+                    auto it = fd_callbacks_.find(fd);
+                    if (it != fd_callbacks_.end()) {
+                        auto callback = it->second;
+                        auto event_mask = events[i].events;
+                        lock.unlock();
+                        try {
+                            callback(event_mask);
+                        } catch (const std::exception& ex) {
+                            LOG_ERROR() << "Exception in fd callback: " << ex;
+                        } catch (...) {
+                            LOG_ERROR() << "Unknown exception in fd callback";
+                        }
+                        lock.lock();
+                    }
+                }
                 if (is_shutting_down_) break;
             }
         }
