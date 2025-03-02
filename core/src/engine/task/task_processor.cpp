@@ -673,29 +673,17 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
         }
 
-        // Always drain event_fd before epoll_wait to avoid missing events
-        bool had_events = false;
+        // Read event_fd before epoll_wait to reset the signal
         {
             uint64_t buffer;
-            
-            while (true) {
-                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                if (ret > 0) {
-                    had_events = true;
-                } else if (ret < 0) {
-                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                    }
-                    break;
-                } else {
-                    break;
-                }
+            ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
+            if (ret > 0) {
+                // If we had events, there might be new tasks, check the queue again
+                continue;
+            } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
             }
         }
-
-        // If we had events, there might be new tasks, check the queue again
-        if (had_events) continue;
-
         if (is_shutting_down_) break;
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
@@ -709,13 +697,8 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
-                // Drain the event_fd
                 uint64_t buffer;
-                ssize_t ret;
-                do {
-                    ret = read(event_fd, &buffer, sizeof(buffer));
-                } while (ret > 0);
-                
+                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
