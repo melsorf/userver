@@ -637,7 +637,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
             
             processed_tasks = true;
-            auto context = opt_context.value();
+            auto context = context_ptr.value();
             bool has_failed = false;
             CheckWaitTime(*context);
 
