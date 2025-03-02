@@ -593,6 +593,8 @@ void TaskProcessor::UnregisterFd(int fd) {
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
         for (const auto event_fd : per_thread_event_fds_) {
+            if (event_fd < 0) continue;
+
             uint64_t value = 1;
             ssize_t ret = write(event_fd, &value, sizeof(value));
             if (ret != sizeof(value)) {
@@ -654,8 +656,40 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         if (is_shutting_down_) break;
-        // If we processed some tasks, check for more before blocking
-        if (processed_tasks) continue;
+        
+        // Check again for tasks before going to epoll_wait
+        {
+            processed_tasks = false;
+            auto context_ptr = queue.PopNonBlocking();
+            if (context_ptr.has_value()) {
+                if (!context_ptr.value()) {
+                    // "Stop" token
+                    is_shutting_down_ = true;
+                    break;
+                }
+                
+                // Put it back and continue processing from the top
+                // This is a bit inefficient but ensures we don't miss anything
+                if (context_ptr.value()) {
+                    queue.Push(context_ptr.value());
+                }
+                continue;
+            }
+        }
+
+        // Always drain event_fd before epoll_wait to avoid missing events
+        {
+            uint64_t buffer;
+            ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
+            if (ret > 0) {
+                // Data was in the event_fd, go back and check for tasks
+                continue;
+            } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+            }
+        }
+
+        if (is_shutting_down_) break;
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
