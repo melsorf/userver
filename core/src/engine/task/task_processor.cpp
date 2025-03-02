@@ -625,7 +625,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     while (!is_shutting_down_) {
         bool processed_tasks = false;
         while (auto context_ptr = queue.PopNonBlocking()) {
-            if (!context_ptr.has_value())) {
+            if (!context_ptr.has_value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
                 break;
