@@ -605,6 +605,25 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 }
 
+namespace {
+    bool ClearEventFd(int event_fd) {
+        uint64_t buffer;
+        bool drained = false;
+        while (true) {
+            ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
+            if (ret > 0) {
+                drained = true;
+            } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                break;
+            } else {
+                break;
+            }
+        }
+        return drained;
+    }
+}
+
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     const int epoll_fd = per_thread_epoll_fds_[thread_index];
     const int event_fd = per_thread_event_fds_[thread_index];
@@ -672,25 +691,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
         }
 
-        // Read event_fd before epoll_wait to reset the signal
-        {
-            uint64_t buffer;
-            bool drained = false;
-            while (true) {
-                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                if (ret > 0) {
-                    drained = true;
-                } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                    break;
-                } else {
-                    break;
-                }
-            }
-            if (is_shutting_down_) break;
-            if (drained) continue;  // check tasks
-        }
+        const bool drained = ClearEventFd(event_fd);
         if (is_shutting_down_) break;
+        if (drained) continue;
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
@@ -703,11 +706,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         for (int i = 0; i < ready; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
-                uint64_t buffer;
-                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                }
+                ClearEventFd(event_fd);
             } else {
                 std::unique_lock<std::mutex> lock(epoll_mtx_);
                 auto it = fd_callbacks_.find(fd);
