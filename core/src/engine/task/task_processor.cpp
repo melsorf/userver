@@ -233,8 +233,12 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
             HandleOverload(*context, action);
         }
     }
-    if (is_shutting_down_) context->RequestCancel(TaskCancellationReason::kShutdown);
-
+    if (is_shutting_down_) {
+        context->RequestCancel(TaskCancellationReason::kShutdown);
+#ifdef __linux__
+        if (!UseEvThreadPool()) WakeupEventLoop();
+#endif  // __linux__
+    }
     SetTaskQueueWaitTimepoint(context);
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
@@ -618,7 +622,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
-
     constexpr std::size_t kMaxEvents{128};
     struct epoll_event events[kMaxEvents];
 
@@ -631,12 +634,8 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 break;
             }
             processed_tasks = true;
-            if (!context_ptr.value()) {
-                LOG_ERROR() << "Got null task context";
-                continue;
-            }
+            if (!context_ptr.value()) continue;
             
-            processed_tasks = true;
             auto context = context_ptr.value();
             bool has_failed = false;
             CheckWaitTime(*context);
