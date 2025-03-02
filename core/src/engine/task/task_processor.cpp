@@ -643,14 +643,14 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context.DoStep();
+                context->DoStep();
             } catch (...) {
                 LOG_ERROR() << "unhandled exception from DoStep()";
                 has_failed = true;
             }
             pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context.IsFinished()) {
-                context.FinishDetached();
+            if (has_failed || context->IsFinished()) {
+                context->FinishDetached();
             }
         }
 
