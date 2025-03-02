@@ -382,7 +382,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
         const int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
             struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET;
+            ev.events = EPOLLIN;
             ev.data.fd = per_thread_event_fds_[index];
             if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, per_thread_event_fds_[index], &ev) == -1) {
                 throw utils::TracefulException("Failed to add event_fd to epoll");
