@@ -628,9 +628,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        bool processed_tasks = false;
         while (auto context_ptr = queue.PopNonBlocking()) {
-            processed_tasks = true;
             if (!context_ptr.has_value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
@@ -658,7 +656,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (is_shutting_down_) break;
         
         // Check again for tasks before going to epoll_wait
-        if (processed_tasks) {
+        {
             auto context_ptr = queue.PopNonBlocking();
             if (context_ptr.has_value()) {
                 if (!context_ptr.value()) {
@@ -676,20 +674,27 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         // Always drain event_fd before epoll_wait to avoid missing events
-        bool event_fd_had_data = false;
+        bool had_events = false;
         {
             uint64_t buffer;
-            ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
-            if (ret > 0) {
-                // Go back and check for tasks
-                event_fd_had_data = true;
-            } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+            
+            while (true) {
+                ssize_t ret = read(event_fd, &buffer, sizeof(buffer));
+                if (ret > 0) {
+                    had_events = true;
+                } else if (ret < 0) {
+                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                    }
+                    break;
+                } else {
+                    break;
+                }
             }
         }
 
-        // If we had data in event_fd, check for tasks again
-        if (event_fd_had_data) continue;
+        // If we had events, there might be new tasks, check the queue again
+        if (had_events) continue;
 
         if (is_shutting_down_) break;
 
