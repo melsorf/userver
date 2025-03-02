@@ -131,13 +131,9 @@ int CreateEventFd() {
 
 TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::TaskProcessorPools> pools)
     : task_queue_(MakeTaskQueue(config)),
-      task_counter_(config.worker_threads),
-      config_(std::move(config)),
-      pools_(std::move(pools))
-#ifdef __linux__
-      ,
-      use_ev_thread_pool_(!PlatformSupportsEpollet())
-#endif  // __linux__
+    task_counter_(config.worker_threads),
+    config_(std::move(config)),
+    pools_(std::move(pools))
 {
     utils::impl::FinishStaticRegistration();
 
@@ -146,7 +142,8 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
 
 #ifdef __linux__
-        if (!use_ev_thread_pool_) {
+        use_ev_thread_pool_ = !PlatformSupportsEpollet();
+        if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             per_thread_event_fds_.resize(config_.worker_threads, -1);
             for (auto& epoll_fd : per_thread_epoll_fds_) {
@@ -166,7 +163,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                 workers_left.count_down();
 
 #ifdef __linux__
-                if (use_ev_thread_pool_) {
+                if (UseEvThreadPool()) {
                     ProcessTasks();
                 } else {
                     RunEventLoop(i);
@@ -200,12 +197,12 @@ void TaskProcessor::Cleanup() noexcept {
         w.join();
     }
 #ifdef __linux__
-    if (!use_ev_thread_pool_) {
+    if (!UseEvThreadPool()) {
         for (auto ep : per_thread_epoll_fds_) {
             if (ep >= 0) ::close(ep);
         }
-        for (auto ev : per_thread_event_fds_) {
-            if (ev >= 0) ::close(ev);
+        for (auto event_fd : per_thread_event_fds_) {
+            if (event_fd >= 0) ::close(event_fd);
         }
     }
 #endif
@@ -377,16 +374,22 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) {
 
 #ifdef __linux__
     // Add event_fd to the epoll
-    if (!use_ev_thread_pool_ && index < per_thread_epoll_fds_.size() && 
-        index < per_thread_event_fds_.size()) {
+    if (!UseEvThreadPool() && index < per_thread_epoll_fds_.size()) {
         const int epoll_fd = per_thread_epoll_fds_[index];
-        const int event_fd = per_thread_event_fds_[index];
-        if (epoll_fd >= 0 && event_fd >= 0) {
+        if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
             struct epoll_event ev;
-            ev.events = EPOLLIN;
-            ev.data.fd = event_fd;
-            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &ev) == -1) {
-                throw utils::TracefulException("Failed to add event_fd to per-thread epoll");
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = per_thread_event_fds_[index];
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, per_thread_event_fds_[index], &ev) == -1) {
+                throw utils::TracefulException("Failed to add event_fd to epoll");
+            }
+
+            int flags = fcntl(per_thread_event_fds_[index], F_GETFL, 0);
+            if (flags == -1) {
+                throw utils::TracefulException("Failed to get event_fd flags");
+            }
+            if (fcntl(per_thread_event_fds_[index], F_SETFL, flags | O_NONBLOCK) == -1) {
+                throw utils::TracefulException("Failed to set event_fd to non-blocking mode");
             }
         }
     }
@@ -529,12 +532,12 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (use_ev_thread_pool_) return 0;
+    if (UseEvThreadPool()) return 0;
 
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
-    ev.events = events | EPOLLET;
+    ev.events = events;
     ev.data.fd = fd;
 
     {
@@ -554,7 +557,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
 }
 
 void TaskProcessor::UnregisterFd(int fd) {
-    if (use_ev_thread_pool_) return;
+    if (UseEvThreadPool()) return;
 
     std::size_t index;
     {
@@ -584,12 +587,12 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!use_ev_thread_pool_) {
-        for (const auto& event_fd : per_thread_event_fds_) {
-            if (event_fd >= 0) {
-                uint64_t value = 1;
-                ssize_t ret = write(event_fd, &value, sizeof(value));
-                if (ret != sizeof(value)) {
+    if (!UseEvThreadPool()) {
+        for (const auto event_fd : per_thread_event_fds_) {
+            uint64_t value = 1;
+            ssize_t ret = write(event_fd, &value, sizeof(value));
+            if (ret != sizeof(value)) {
+                if (errno != EAGAIN) {
                     LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
                 }
             }
@@ -597,53 +600,40 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 }
 
-void TaskProcessor::RunEventLoop(const std::size_t index) {
-    const int epoll_fd = (index < per_thread_epoll_fds_.size()) ? per_thread_epoll_fds_[index] : -1;
-    const int event_fd = (index < per_thread_event_fds_.size()) ? per_thread_event_fds_[index] : -1;
+void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
+    const int epoll_fd = per_thread_epoll_fds_[thread_index];
+    const int event_fd = per_thread_event_fds_[thread_index];
+    
     if (epoll_fd < 0 || event_fd < 0) {
+        LOG_ERROR() << "Invalid epoll or event fd for thread " << thread_index;
         // fallback: just do tasks
-        while (!is_shutting_down_) {
-            ProcessTasks();
-        }
+        ProcessTasks();
         return;
     }
-    
+
     if (std::holds_alternative<WorkStealingTaskQueue>(task_queue_)) {
         LOG_ERROR() << "RunEventLoop called with WorkStealingTaskQueue, falling back to ProcessTasks";
-        while (!is_shutting_down_) {
-            ProcessTasks();
-        }
+        ProcessTasks();
         return;
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
 
-    // Make sure eventfd is set to non-blocking mode
-    int flags = fcntl(event_fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(event_fd, F_SETFL, flags | O_NONBLOCK);
-    }
-
-    constexpr std::size_t kMaxEvents{32};
+    constexpr std::size_t kMaxEvents{128};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
         bool processed_tasks = false;
-        
-        // Process as many tasks as available first
-        processed_tasks = false;
-
-        while (!is_shutting_down_) {
-            auto opt_context = queue.PopNonBlocking();
-            if (!opt_context.has_value()) {
-                // No tasks available
-                break;
-            }
-            
-            if (!opt_context.value()) {
+        while (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr.has_value())) {
                 // "Stop" token
                 is_shutting_down_ = true;
                 break;
+            }
+            processed_tasks = true;
+            if (!context_ptr.value()) {
+                LOG_ERROR() << "Got null task context";
+                continue;
             }
             
             processed_tasks = true;
@@ -653,116 +643,60 @@ void TaskProcessor::RunEventLoop(const std::size_t index) {
 
             try {
                 impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context->DoStep();
-            } catch (const std::exception& ex) {
-                LOG_ERROR() << "unhandled exception from DoStep(): " << ex;
-                has_failed = true;
+                context.DoStep();
             } catch (...) {
-                LOG_ERROR() << "unhandled unknown exception from DoStep()";
+                LOG_ERROR() << "unhandled exception from DoStep()";
                 has_failed = true;
             }
-            
             pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
+            if (has_failed || context.IsFinished()) {
+                context.FinishDetached();
             }
         }
-        if (is_shutting_down_) break;
 
+        if (is_shutting_down_) break;
         // If we processed some tasks, check for more before blocking
         if (processed_tasks) continue;
 
-        // Non-blocking check for events
-        // This ensures we don't miss any events that might have occurred
-        // while we were processing tasks
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0);
-            
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-            continue;
-        }
-
-        // Process the events that woke us up
-        if (ready > 0) {
-            std::unique_lock<std::mutex> lock(epoll_mtx_);
-            for (int i = 0; i < ready; ++i) {
-                const auto fd = events[i].data.fd;
-                
-                if (fd == event_fd) {
-                    // Completely drain the eventfd
-                    uint64_t buffer;
-                    ssize_t ret;
-                    do {
-                        ret = read(event_fd, &buffer, sizeof(buffer));
-                    } while (ret > 0);
-                    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                    }
-                } else {
-                    auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        auto callback = it->second;
-                        auto event_mask = events[i].events;
-                        lock.unlock();
-                        try {
-                            callback(event_mask);
-                        } catch (const std::exception& ex) {
-                            LOG_ERROR() << "Exception in fd callback: " << ex;
-                        } catch (...) {
-                            LOG_ERROR() << "Unknown exception in fd callback";
-                        }
-                        lock.lock();
-                    }
-                }
-                
-                if (is_shutting_down_) break;
-            }
-        }
-        // No tasks and no pending events - block waiting for events
-        ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
-        
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-            continue;
+            break;
         }
 
-        // Process events
-        if (ready > 0) {
-            std::unique_lock<std::mutex> lock(epoll_mtx_);
-            for (int i = 0; i < ready; ++i) {
-                const auto fd = events[i].data.fd;
+        for (int i = 0; i < ready; ++i) {
+            const auto fd = events[i].data.fd;
+            if (fd == event_fd) {
+                // Drain the event_fd
+                uint64_t buffer;
+                ssize_t ret;
+                do {
+                    ret = read(event_fd, &buffer, sizeof(buffer));
+                } while (ret > 0);
                 
-                if (fd == event_fd) {
-                    uint64_t buffer;
-                    ssize_t ret;
-                    do {
-                        ret = read(event_fd, &buffer, sizeof(buffer));
-                    } while (ret > 0);
-                    
-                    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
-                    }
-                } else {
-                    auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        auto callback = it->second;
-                        auto event_mask = events[i].events;
-                        lock.unlock();
-                        try {
-                            callback(event_mask);
-                        } catch (const std::exception& ex) {
-                            LOG_ERROR() << "Exception in fd callback: " << ex;
-                        } catch (...) {
-                            LOG_ERROR() << "Unknown exception in fd callback";
-                        }
-                        lock.lock();
-                    }
+                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
-                if (is_shutting_down_) break;
+            } else {
+                std::unique_lock<std::mutex> lock(epoll_mtx_);
+                auto it = fd_callbacks_.find(fd);
+                if (it != fd_callbacks_.end()) {
+                    auto callback = it->second;
+                    auto event_mask = events[i].events;
+                    lock.unlock();
+                    try {
+                        callback(event_mask);
+                    } catch (const std::exception& ex) {
+                        LOG_ERROR() << "Exception in fd callback: " << ex;
+                    } catch (...) {
+                        LOG_ERROR() << "Unknown exception in fd callback";
+                    }
+                    lock.lock();
+                }
             }
+            if (is_shutting_down_) break;
         }
     }
 }
