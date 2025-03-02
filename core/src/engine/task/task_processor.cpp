@@ -693,7 +693,21 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         const bool drained = ClearEventFd(event_fd);
         if (is_shutting_down_) break;
-        if (drained) continue;
+        
+        if (drained) {
+            // Check for new tasks immediately after event fd is drained
+            auto context_ptr = queue.PopNonBlocking();
+            if (context_ptr.has_value()) {
+                if (!context_ptr.value()) {
+                    is_shutting_down_ = true;
+                    break;
+                }
+                if (context_ptr.value()) {
+                    queue.Push(std::move(context_ptr.value()));
+                }
+            }
+            continue;  // Always continue the outer loop to check for more tasks
+        }
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
