@@ -671,7 +671,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 // Put it back and continue processing from the top
                 // This is a bit inefficient but ensures we don't miss anything
                 if (context_ptr.value()) {
-                    queue.Push(context_ptr.value());
+                    queue.Push(std::move(context_ptr.value()));
                 }
                 continue;
             }
