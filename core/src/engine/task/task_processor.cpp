@@ -628,14 +628,12 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        bool processed_tasks = false;
         while (auto context_ptr = queue.PopNonBlocking()) {
             if (!context_ptr.has_value()) {
                 // "Stop" token
                 is_shutting_down_ = true;
                 break;
             }
-            processed_tasks = true;
             if (!context_ptr.value()) continue;
             
             auto context = context_ptr.value();
@@ -659,7 +657,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         
         // Check again for tasks before going to epoll_wait
         {
-            processed_tasks = false;
             auto context_ptr = queue.PopNonBlocking();
             if (context_ptr.has_value()) {
                 if (!context_ptr.value()) {
