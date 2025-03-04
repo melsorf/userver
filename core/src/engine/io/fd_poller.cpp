@@ -111,6 +111,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     engine::impl::FastPimplWaitListLight waiters_;
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
+    std::atomic<bool> uses_fd_registration_{false};
 };
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }

@@ -5,7 +5,6 @@
 
 #include <memory>
 #include <optional>
-#include <atomic>
 
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
@@ -103,7 +102,6 @@ private:
 
     struct Impl;
     utils::FastPimpl<Impl, 128, 16> pimpl_;
-    std::atomic<bool> uses_fd_registration_{false};
 };
 
 }  // namespace engine::io
