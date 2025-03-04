@@ -4,6 +4,7 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -226,6 +227,20 @@ void FdPoller::SwitchStateToReadyToUse() {
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
+#ifdef __linux__
+    // Try to use eventfd if available
+    if (!engine::task::TaskProcessor::UseEvThreadPool()) {
+        auto callback = [this](uint32_t events) {
+            this->events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
+            this->WakeupWaiters();
+        };
+        auto index = engine::TaskProcessor::RegisterFd(fd, GetEvMode(kind), std::move(callback));
+        if (index != -1) {
+            state_ = State::kReadyToUse;
+            return;
+        }
+    }
+#endif // __linux__
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
     watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
