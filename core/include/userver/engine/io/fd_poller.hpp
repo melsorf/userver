@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <optional>
+#include <atomic>
 
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
