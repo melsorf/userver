@@ -79,9 +79,7 @@ public:
 #ifdef __linux__
     bool UseEvThreadPool() const { return use_ev_thread_pool_; }
 
-    void RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-        RegisterFd(fd, events, std::move(callback));
-    }
+    std::optional<std::size_t> RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback);
     void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
     
     void WakeupEventLoop() const;

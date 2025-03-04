@@ -590,6 +590,15 @@ void TaskProcessor::UnregisterFd(int fd) {
     WakeupEventLoop();
 }
 
+// public
+std::optional<std::size_t> TaskProcessor::RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+    auto index = RegisterFd(fd, events, std::move(callback));
+    if (index == std::numeric_limits<std::size_t>::max()) {
+        return std::nullopt;
+    }
+    return index;
+}
+
 void TaskProcessor::WakeupEventLoop() const {
     if (!UseEvThreadPool()) {
         for (const auto event_fd : per_thread_event_fds_) {
