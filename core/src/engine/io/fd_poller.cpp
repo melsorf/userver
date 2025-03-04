@@ -235,8 +235,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
             this->events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
             this->WakeupWaiters();
         };
-        auto index = task_processor.RegisterFd(fd, GetEvMode(kind), std::move(callback));
-        if (index != -1) {
+        auto index_opt = task_processor.RegisterFileDescriptor(fd, GetEvMode(kind), std::move(callback));
+        if (index_opt.has_value()) {
             state_ = State::kReadyToUse;
             return;
         }
