@@ -229,7 +229,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
 #ifdef __linux__
     // Try to use eventfd if available
-    if (!engine::task::TaskProcessor::UseEvThreadPool()) {
+    if (!engine::TaskProcessor::UseEvThreadPool()) {
         auto callback = [this](uint32_t events) {
             this->events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
             this->WakeupWaiters();
