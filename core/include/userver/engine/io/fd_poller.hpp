@@ -102,6 +102,7 @@ private:
 
     struct Impl;
     utils::FastPimpl<Impl, 128, 16> pimpl_;
+    std::atomic<bool> uses_fd_registration_{false};
 };
 
 }  // namespace engine::io

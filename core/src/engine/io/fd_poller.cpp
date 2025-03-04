@@ -136,8 +136,9 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-    StopWatcher();
-
+    if (!uses_fd_registration_.load(std::memory_order_relaxed)) {
+        StopWatcher();
+    }
     auto old_state = State::kReadyToUse;
     const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
 
@@ -148,6 +149,7 @@ void FdPoller::Impl::Invalidate() {
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
+    if (uses_fd_registration_.load(std::memory_order_relaxed)) return;
     UASSERT(IsValid());
     watcher_.Stop();
 }
@@ -237,6 +239,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
         };
         auto index_opt = task_processor.RegisterFileDescriptor(fd, GetEvMode(kind), std::move(callback));
         if (index_opt.has_value()) {
+            uses_fd_registration_.store(true, std::memory_order_relaxed);
             state_ = State::kReadyToUse;
             return;
         }
