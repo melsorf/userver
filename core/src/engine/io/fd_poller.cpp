@@ -229,12 +229,13 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
 #ifdef __linux__
     // Try to use eventfd if available
-    if (!engine::TaskProcessor::UseEvThreadPool()) {
+    auto& task_processor = current_task::GetTaskProcessor();
+    if (!task_processor.UseEvThreadPool()) {
         auto callback = [this](uint32_t events) {
             this->events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
             this->WakeupWaiters();
         };
-        auto index = engine::TaskProcessor::RegisterFd(fd, GetEvMode(kind), std::move(callback));
+        auto index = task_processor.RegisterFd(fd, GetEvMode(kind), std::move(callback));
         if (index != -1) {
             state_ = State::kReadyToUse;
             return;
