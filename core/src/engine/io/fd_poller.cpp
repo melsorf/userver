@@ -4,8 +4,6 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
-#include <engine/task/task_processor.hpp>
-
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
     static constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
@@ -107,18 +105,29 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
 
     void RethrowErrorResult() const override {}
 
+    void SetupWithRegisterFd(int fd, Kind kind);
+
+    void CleanupRegisterFd();
+
+    void OnFdEvent(uint32_t events);
+
     std::atomic<FdPoller::State> state_{FdPoller::State::kInvalid};
     engine::impl::FastPimplWaitListLight waiters_;
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
-    std::atomic<bool> uses_fd_registration_{false};
+    bool using_register_fd_{false};
+    std::optional<std::size_t> fd_registration_index_;
 };
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
 FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
 
-FdPoller::Impl::~Impl() = default;
+FdPoller::Impl::~Impl() {
+    if (using_register_fd_) {
+        CleanupRegisterFd();
+    }
+}
 
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
@@ -137,9 +146,12 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-    if (!uses_fd_registration_.load(std::memory_order_relaxed)) {
+    if (using_register_fd_) {
+        CleanupRegisterFd();
+    } else {
         StopWatcher();
     }
+
     auto old_state = State::kReadyToUse;
     const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
 
@@ -150,7 +162,6 @@ void FdPoller::Impl::Invalidate() {
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
-    if (uses_fd_registration_.load(std::memory_order_relaxed)) return;
     UASSERT(IsValid());
     watcher_.Stop();
 }
@@ -230,26 +241,94 @@ void FdPoller::SwitchStateToReadyToUse() {
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
-#ifdef __linux__
-    // Try to use eventfd if available
-    auto& task_processor = current_task::GetTaskProcessor();
-    if (!task_processor.UseEvThreadPool()) {
-        auto callback = [this](uint32_t events) {
-            this->events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
-            this->WakeupWaiters();
-        };
-        auto index_opt = task_processor.RegisterFileDescriptor(fd, GetEvMode(kind), std::move(callback));
-        if (index_opt.has_value()) {
-            uses_fd_registration_.store(true, std::memory_order_relaxed);
-            state_ = State::kReadyToUse;
-            return;
-        }
-    }
-#endif // __linux__
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-    watcher_.Set(fd, GetEvMode(kind));
+
+    // Try to use RegisterFd first
+    try {
+        SetupWithRegisterFd(fd, kind);
+        using_register_fd_ = true;
+    } catch (const std::exception& ex) {
+        // Fall back to watcher_
+        using_register_fd_ = false;
+        watcher_.Set(fd, GetEvMode(kind));
+    }
+    
     state_ = State::kReadyToUse;
 }
+
+void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
+#ifdef __linux__
+    // Convert FdPoller::Kind to epoll events
+    uint32_t events = 0;
+    switch (kind) {
+        case Kind::kRead:
+            events = EPOLLIN;
+            break;
+        case Kind::kWrite:
+            events = EPOLLOUT;
+            break;
+        case Kind::kReadWrite:
+            events = EPOLLIN | EPOLLOUT;
+            break;
+        default:
+            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
+    }
+    events |= EPOLLET;
+        
+    // Get the current task processor
+    auto* task_processor = engine::current_task::GetTaskProcessor();
+    if (!task_processor) {
+        throw std::runtime_error("No task processor available");
+    }
+        
+    // Register the fd with the RegisterFd
+    fd_registration_index_ = task_processor->RegisterFileDescriptor(fd, events,
+        [this, fd](uint32_t events) { OnFdEvent(events);});
+            
+    if (!fd_registration_index_) {
+        throw std::runtime_error("Failed to register file descriptor");
+    }
+#else
+    throw std::runtime_error("RegisterFd is not available on this platform");
+#endif
+}
+
+void FdPoller::Impl::OnFdEvent(uint32_t events) {
+#ifdef __linux__
+        // Convert epoll events to FdPoller::Kind
+        Kind kind;
+        if ((events & EPOLLIN) && (events & EPOLLOUT)) {
+            kind = Kind::kReadWrite;
+        } else if (events & EPOLLIN) {
+            kind = Kind::kRead;
+        } else if (events & EPOLLOUT) {
+            kind = Kind::kWrite;
+        } else {
+            // Unknown event, assume error
+            kind = Kind::kRead;  // Default to read for compatibility
+        }
+        
+        events_that_happened_.store(kind, std::memory_order_relaxed);
+        WakeupWaiters();
+#endif
+}
+
+void FdPoller::Impl::CleanupRegisterFd() {
+#ifdef __linux__
+    if (fd_registration_index_) {
+        int fd = watcher_.GetFd();
+        if (fd >= 0) {
+            auto* task_processor = engine::current_task::GetTaskProcessor();
+            if (task_processor) {
+                task_processor->UnregisterFd(fd);
+            }
+        }
+        fd_registration_index_.reset();
+    }
+#endif
+}
+    
+    
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }
 
