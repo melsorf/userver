@@ -289,7 +289,22 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
 #ifdef __linux__
     auto& tp = engine::current_task::GetTaskProcessor();
-    uint32_t events = static_cast<uint32_t>(GetEvMode(kind));
+    
+    uint32_t events = 0;
+    switch (kind) {
+        case Kind::kRead:
+            events = EPOLLIN;
+            break;
+        case Kind::kWrite:
+            events = EPOLLOUT;
+            break;
+        case Kind::kReadWrite:
+            events = EPOLLIN | EPOLLOUT;
+            break;
+        default:
+            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
+    }
+    
     fd_registration_index_ = tp.RegisterFileDescriptor(fd, events, [this](uint32_t epoll_events) {
         this->OnFdEvent(epoll_events);
     });
@@ -309,7 +324,11 @@ void FdPoller::Impl::CleanupRegisterFd() {
 #ifdef __linux__
     if (registered_fd_ != -1) {
         auto& tp = engine::current_task::GetTaskProcessor();
-        tp.UnregisterFileDescriptor(registered_fd_);
+        try {
+            tp.UnregisterFileDescriptor(registered_fd_);
+        } catch (const std::exception& ex) {
+            // TODO: log?
+        }
         registered_fd_ = -1;
     }
     fd_registration_index_.reset();
