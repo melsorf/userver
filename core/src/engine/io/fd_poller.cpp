@@ -4,6 +4,7 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
     static constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
