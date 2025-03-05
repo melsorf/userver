@@ -262,9 +262,9 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 
 void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
 #ifdef __linux__
-    auto* tp = engine::current_task::GetTaskProcessor();
+    auto& tp = engine::current_task::GetTaskProcessor();
     uint32_t events = static_cast<uint32_t>(GetEvMode(kind));
-    fd_registration_index_ = tp->RegisterFd(fd, events, [this](uint32_t epoll_events) {
+    fd_registration_index_ = tp.RegisterFd(fd, events, [this](uint32_t epoll_events) {
         this->OnFdEvent(epoll_events);
     });
     watcher_.Set(fd, 0);
@@ -280,8 +280,8 @@ void FdPoller::Impl::OnFdEvent(uint32_t events) {
 
 void FdPoller::Impl::CleanupRegisterFd() {
 #ifdef __linux__
-    auto* tp = engine::current_task::GetTaskProcessor();
-    tp->UnregisterFile(watcher_.GetFd());
+    auto& tp = engine::current_task::GetTaskProcessor();
+    tp.UnregisterFile(watcher_.GetFd());
     fd_registration_index_.reset();
 #endif
 }
