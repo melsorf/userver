@@ -51,6 +51,25 @@ int GetEvMode(FdPoller::Kind kind) {
     }
 }
 
+#ifdef __linux__
+FdPoller::Kind GetUserMode(int events) {
+    const bool read = events & EPOLLIN;
+    const bool write = events & EPOLLOUT;
+    if (read && write) {
+        return FdPoller::Kind::kReadWrite;
+    }
+
+    if (read) {
+        return FdPoller::Kind::kRead;
+    }
+    
+    if (write) {
+        return FdPoller::Kind::kWrite;
+    }
+
+    UINVARIANT(false, "Failed to recognize events that happened on the socket.");
+}
+#else
 FdPoller::Kind GetUserMode(int ev_events) {
     if ((ev_events & EV_READ) && (ev_events & EV_WRITE)) {
         return FdPoller::Kind::kReadWrite;
@@ -66,6 +85,7 @@ FdPoller::Kind GetUserMode(int ev_events) {
 
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
+#endif
 
 }  // namespace
 
