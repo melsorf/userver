@@ -121,6 +121,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     std::atomic<FdPoller::Kind> events_that_happened_{};
     bool using_register_fd_{false};
     std::optional<std::size_t> fd_registration_index_;
+    int registered_fd_{-1};
 };
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
@@ -198,7 +199,12 @@ FdPoller::operator bool() const noexcept { return IsValid(); }
 
 bool FdPoller::IsValid() const noexcept { return pimpl_->IsValid(); }
 
-int FdPoller::GetFd() const noexcept { return pimpl_->watcher_.GetFd(); }
+int FdPoller::GetFd() const noexcept {
+    if (pimpl_->using_register_fd_) {
+        return pimpl_->registered_fd_;
+    }
+    return pimpl_->watcher_.GetFd();
+}
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
@@ -267,6 +273,7 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
     fd_registration_index_ = tp.RegisterFileDescriptor(fd, events, [this](uint32_t epoll_events) {
         this->OnFdEvent(epoll_events);
     });
+    registered_fd_ = fd;
     watcher_.Set(fd, 0);
 #else
     throw std::runtime_error("RegisterFd is not available on this platform");
@@ -280,8 +287,11 @@ void FdPoller::Impl::OnFdEvent(uint32_t events) {
 
 void FdPoller::Impl::CleanupRegisterFd() {
 #ifdef __linux__
-    auto& tp = engine::current_task::GetTaskProcessor();
-    tp.UnregisterFileDescriptor(watcher_.GetFd());
+    if (registered_fd_ != -1) {
+        auto& tp = engine::current_task::GetTaskProcessor();
+        tp.UnregisterFileDescriptor(registered_fd_);
+        registered_fd_ = -1;
+    }
     fd_registration_index_.reset();
 #endif
 }
