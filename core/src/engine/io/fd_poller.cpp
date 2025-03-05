@@ -262,72 +262,30 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 
 void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
 #ifdef __linux__
-    // Convert FdPoller::Kind to epoll events
-    uint32_t events = 0;
-    switch (kind) {
-        case Kind::kRead:
-            events = EPOLLIN;
-            break;
-        case Kind::kWrite:
-            events = EPOLLOUT;
-            break;
-        case Kind::kReadWrite:
-            events = EPOLLIN | EPOLLOUT;
-            break;
-        default:
-            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
-    }
-    events |= EPOLLET;
-        
-    auto& task_processor = engine::current_task::GetTaskProcessor();
-        
-    // Register the fd with the RegisterFd
-    fd_registration_index_ = task_processor.RegisterFileDescriptor(fd, events,
-        [this](uint32_t events) { OnFdEvent(events);});
-            
-    if (!fd_registration_index_) {
-        throw std::runtime_error("Failed to register file descriptor");
-    }
+    auto* tp = engine::current_task::GetTaskProcessor();
+    uint32_t events = static_cast<uint32_t>(GetEvMode(kind));
+    fd_registration_index_ = tp->RegisterFd(fd, events, [this](uint32_t epoll_events) {
+        this->OnFdEvent(epoll_events);
+    });
+    watcher_.Set(fd, 0);
 #else
     throw std::runtime_error("RegisterFd is not available on this platform");
 #endif
 }
 
 void FdPoller::Impl::OnFdEvent(uint32_t events) {
-#ifdef __linux__
-        // Convert epoll events to FdPoller::Kind
-        Kind kind;
-        if ((events & EPOLLIN) && (events & EPOLLOUT)) {
-            kind = Kind::kReadWrite;
-        } else if (events & EPOLLIN) {
-            kind = Kind::kRead;
-        } else if (events & EPOLLOUT) {
-            kind = Kind::kWrite;
-        } else {
-            // Unknown event, default to read for compatibility
-            kind = Kind::kRead;
-        }
-        
-        events_that_happened_.store(kind, std::memory_order_relaxed);
-        WakeupWaiters();
-#endif
+    events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
+    WakeupWaiters();
 }
 
 void FdPoller::Impl::CleanupRegisterFd() {
 #ifdef __linux__
-    if (fd_registration_index_) {
-        int fd = watcher_.GetFd();
-        if (fd >= 0) {
-            auto& task_processor = engine::current_task::GetTaskProcessor();
-            task_processor.UnregisterFileDescriptor(fd);
-        }
-        fd_registration_index_.reset();
-    }
+    auto* tp = engine::current_task::GetTaskProcessor();
+    tp->UnregisterFile(watcher_.GetFd());
+    fd_registration_index_.reset();
 #endif
 }
     
-    
-
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }
 
 }  // namespace engine::io
