@@ -280,9 +280,6 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
     events |= EPOLLET;
         
     auto& task_processor = engine::current_task::GetTaskProcessor();
-    if (!&task_processor) {
-        throw std::runtime_error("No task processor available");
-    }
         
     // Register the fd with the RegisterFd
     fd_registration_index_ = task_processor.RegisterFileDescriptor(fd, events,
@@ -322,9 +319,7 @@ void FdPoller::Impl::CleanupRegisterFd() {
         int fd = watcher_.GetFd();
         if (fd >= 0) {
             auto& task_processor = engine::current_task::GetTaskProcessor();
-            if (task_processor) {
-                task_processor.UnregisterFd(fd);
-            }
+            task_processor.UnregisterFd(fd);
         }
         fd_registration_index_.reset();
     }
