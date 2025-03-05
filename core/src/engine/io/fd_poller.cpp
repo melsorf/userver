@@ -53,7 +53,7 @@ int GetEvMode(FdPoller::Kind kind) {
 
 #ifdef __linux__
 FdPoller::Kind GetUserMode(int events) {
-    const bool read = (events & (EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP)) != 0;
+    const bool read = (events & (EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLPRI)) != 0;
     const bool write = (events & EPOLLOUT) != 0;
     if (read && write) return FdPoller::Kind::kReadWrite;
     if (read) return FdPoller::Kind::kRead;
@@ -143,6 +143,7 @@ FdPoller::Impl::~Impl() {
     if (using_register_fd_) {
         CleanupRegisterFd();
     }
+    watcher_.Stop();
 }
 
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
@@ -300,7 +301,7 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
         this->OnFdEvent(epoll_events);
     });
     registered_fd_ = fd;
-    watcher_.Set(fd, 0);
+    watcher_.Set(-1, 0);
 #else
     throw std::runtime_error("RegisterFd is not available on this platform");
 #endif
