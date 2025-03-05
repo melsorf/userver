@@ -286,7 +286,7 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
         
     // Register the fd with the RegisterFd
     fd_registration_index_ = task_processor.RegisterFileDescriptor(fd, events,
-        [this, fd](uint32_t events) { OnFdEvent(events);});
+        [this](uint32_t events) { OnFdEvent(events);});
             
     if (!fd_registration_index_) {
         throw std::runtime_error("Failed to register file descriptor");
