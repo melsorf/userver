@@ -319,7 +319,7 @@ void FdPoller::Impl::CleanupRegisterFd() {
         int fd = watcher_.GetFd();
         if (fd >= 0) {
             auto& task_processor = engine::current_task::GetTaskProcessor();
-            task_processor.UnregisterFd(fd);
+            task_processor.UnregisterFileDescriptor(fd);
         }
         fd_registration_index_.reset();
     }
