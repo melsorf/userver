@@ -5,6 +5,9 @@
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_processor.hpp>
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
     static constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
@@ -276,14 +279,13 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
     }
     events |= EPOLLET;
         
-    // Get the current task processor
-    auto* task_processor = engine::current_task::GetTaskProcessor();
-    if (!task_processor) {
+    auto& task_processor = engine::current_task::GetTaskProcessor();
+    if (!&task_processor) {
         throw std::runtime_error("No task processor available");
     }
         
     // Register the fd with the RegisterFd
-    fd_registration_index_ = task_processor->RegisterFileDescriptor(fd, events,
+    fd_registration_index_ = task_processor.RegisterFileDescriptor(fd, events,
         [this, fd](uint32_t events) { OnFdEvent(events);});
             
     if (!fd_registration_index_) {
@@ -305,8 +307,8 @@ void FdPoller::Impl::OnFdEvent(uint32_t events) {
         } else if (events & EPOLLOUT) {
             kind = Kind::kWrite;
         } else {
-            // Unknown event, assume error
-            kind = Kind::kRead;  // Default to read for compatibility
+            // Unknown event, default to read for compatibility
+            kind = Kind::kRead;
         }
         
         events_that_happened_.store(kind, std::memory_order_relaxed);
@@ -319,9 +321,9 @@ void FdPoller::Impl::CleanupRegisterFd() {
     if (fd_registration_index_) {
         int fd = watcher_.GetFd();
         if (fd >= 0) {
-            auto* task_processor = engine::current_task::GetTaskProcessor();
+            auto& task_processor = engine::current_task::GetTaskProcessor();
             if (task_processor) {
-                task_processor->UnregisterFd(fd);
+                task_processor.UnregisterFd(fd);
             }
         }
         fd_registration_index_.reset();
