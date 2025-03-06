@@ -720,6 +720,14 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                         LOG_ERROR() << "Unknown exception in fd callback";
                     }
                     lock.lock();
+
+                    // Rearm the fd
+                    struct epoll_event ev;
+                    ev.events = event_mask | EPOLLET;
+                    ev.data.fd = fd;
+                    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+                        LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
+                    }
                 }
             }
             if (is_shutting_down_) break;
