@@ -723,7 +723,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
                     // Rearm the fd
                     struct epoll_event ev;
-                    ev.events = (event_mask & ~EPOLLERR & ~EPOLLHUP) | EPOLLET;
+                    ev.events = ((event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP)) | EPOLLET);
                     ev.data.fd = fd;
                     if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
                         LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
