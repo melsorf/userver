@@ -106,9 +106,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
         if (waiters_->GetSignalOrAppend(&waiter)) {
             return engine::impl::EarlyWakeup{true};
         }
-        if (!using_register_fd_) {
-            watcher_.StartAsync();
-        }
+        watcher_.StartAsync();
         return engine::impl::EarlyWakeup{false};
     }
 
