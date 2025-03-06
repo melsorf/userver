@@ -713,7 +713,10 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                     auto event_mask = events[i].events;
                     lock.unlock();
                     try {
-                        callback(event_mask);
+                        while (true) {
+                            const bool finished = callback(event_mask);
+                            if (finished) break;
+                        }
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {
