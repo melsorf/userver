@@ -279,6 +279,9 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 
 void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
 #ifdef __linux__
+    if (fd < 0) {
+        throw std::runtime_error("Cannot register invalid file descriptor");
+    }
     auto& tp = engine::current_task::GetTaskProcessor();
     
     uint32_t events = 0;
@@ -300,7 +303,6 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
         this->OnFdEvent(epoll_events);
     });
     registered_fd_ = fd;
-    watcher_.Set(fd, 0);
 #else
     throw std::runtime_error("RegisterFd is not available on this platform");
 #endif
