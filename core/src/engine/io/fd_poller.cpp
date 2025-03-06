@@ -106,7 +106,9 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
         if (waiters_->GetSignalOrAppend(&waiter)) {
             return engine::impl::EarlyWakeup{true};
         }
-        watcher_.StartAsync();
+        if (!using_register_fd_) {
+            watcher_.StartAsync();
+        }
         return engine::impl::EarlyWakeup{false};
     }
 
@@ -303,6 +305,7 @@ void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
         this->OnFdEvent(epoll_events);
     });
     registered_fd_ = fd;
+    watcher_.Stop();
 #else
     throw std::runtime_error("RegisterFd is not available on this platform");
 #endif
