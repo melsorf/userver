@@ -537,7 +537,9 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (UseEvThreadPool()) return 0;
-
+    if (fd < 0) {
+        throw utils::TracefulException("Invalid fd passed to RegisterFd");
+    }
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
@@ -592,6 +594,9 @@ void TaskProcessor::UnregisterFd(int fd) {
 
 // public
 std::optional<std::size_t> TaskProcessor::RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+    if (fd < 0) {
+        return std::nullopt;
+    }
     auto index = RegisterFd(fd, events, std::move(callback));
     if (index == std::numeric_limits<std::size_t>::max()) {
         return std::nullopt;
