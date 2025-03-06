@@ -541,7 +541,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
-    ev.events = events;
+    ev.events = events | EPOLLET;
     ev.data.fd = fd;
 
     {
