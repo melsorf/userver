@@ -536,10 +536,10 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (UseEvThreadPool()) return 0;
     if (fd < 0) {
-        throw utils::TracefulException("Invalid fd passed to RegisterFd");
+        return std::numeric_limits<std::size_t>::max();
     }
+    if (UseEvThreadPool()) return 0;
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
