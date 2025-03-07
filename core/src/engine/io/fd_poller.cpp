@@ -4,10 +4,7 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
-#include <engine/task/task_processor.hpp>
-#ifdef __linux__
-#include <sys/epoll.h>
-#endif
+
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
     static constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
@@ -51,16 +48,6 @@ int GetEvMode(FdPoller::Kind kind) {
     }
 }
 
-#ifdef __linux__
-FdPoller::Kind GetUserMode(int events) {
-    const bool read = (events & (EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLPRI)) != 0;
-    const bool write = (events & EPOLLOUT) != 0;
-    if (read && write) return FdPoller::Kind::kReadWrite;
-    if (read) return FdPoller::Kind::kRead;
-    if (write) return FdPoller::Kind::kWrite;
-    UINVARIANT(false, "Failed to recognize events that happened on the socket.");
-}
-#else
 FdPoller::Kind GetUserMode(int ev_events) {
     if ((ev_events & EV_READ) && (ev_events & EV_WRITE)) {
         return FdPoller::Kind::kReadWrite;
@@ -76,7 +63,6 @@ FdPoller::Kind GetUserMode(int ev_events) {
 
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
-#endif
 
 }  // namespace
 
@@ -106,44 +92,56 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
         if (waiters_->GetSignalOrAppend(&waiter)) {
             return engine::impl::EarlyWakeup{true};
         }
+#ifdef __linux__
+        if (!use_epoll_) {
+            watcher_.StartAsync();
+        }
+#else
         watcher_.StartAsync();
+#endif
         return engine::impl::EarlyWakeup{false};
     }
 
     void RemoveWaiter(engine::impl::TaskContext& waiter) noexcept override {
         waiters_->Remove(waiter);
         // we need to stop watcher manually to avoid racy wakeups later
+#ifdef __linux__
+        if (!use_epoll_) {
+            watcher_.StopAsync();
+        }
+#else
         watcher_.StopAsync();
+#endif
     }
 
-    void AfterWait() noexcept override { watcher_.Stop(); }
+    void AfterWait() noexcept override {
+#ifdef __linux__
+        if (!use_epoll_) {
+            watcher_.Stop();
+        }
+#else
+        watcher_.Stop();
+ #endif
+    } 
 
     void RethrowErrorResult() const override {}
-
-    void SetupWithRegisterFd(int fd, Kind kind);
-
-    void CleanupRegisterFd();
-
-    void OnFdEvent(uint32_t events);
 
     std::atomic<FdPoller::State> state_{FdPoller::State::kInvalid};
     engine::impl::FastPimplWaitListLight waiters_;
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
-    bool using_register_fd_{false};
-    std::optional<std::size_t> fd_registration_index_;
-    int registered_fd_{-1};
+#ifdef __linux__
+    bool use_epoll_{false};
+    std::optional<std::size_t> registered_fd_index_;
+    engine::TaskProcessor* task_processor_{nullptr};
+#endif
 };
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
 FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
 
-FdPoller::Impl::~Impl() {
-    if (using_register_fd_) {
-        CleanupRegisterFd();
-    }
-}
+FdPoller::Impl::~Impl() = default;
 
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
@@ -162,12 +160,23 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-    if (using_register_fd_) {
-        CleanupRegisterFd();
+#ifdef __linux__
+    if (use_epoll_) {
+        if (task_processor_ && registered_fd_index_) {
+            int fd = watcher_.GetFd();
+            if (fd >= 0) {
+                task_processor_->UnregisterFd(fd);
+            }
+            registered_fd_index_.reset();
+            use_epoll_ = false;
+            task_processor_ = nullptr;
+        }
     } else {
         StopWatcher();
     }
-
+#else
+    StopWatcher();
+#endif
     auto old_state = State::kReadyToUse;
     const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
 
@@ -210,12 +219,7 @@ FdPoller::operator bool() const noexcept { return IsValid(); }
 
 bool FdPoller::IsValid() const noexcept { return pimpl_->IsValid(); }
 
-int FdPoller::GetFd() const noexcept {
-    if (pimpl_->using_register_fd_) {
-        return pimpl_->registered_fd_;
-    }
-    return pimpl_->watcher_.GetFd();
-}
+int FdPoller::GetFd() const noexcept { return pimpl_->watcher_.GetFd(); }
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
@@ -263,85 +267,42 @@ void FdPoller::SwitchStateToReadyToUse() {
 void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-
-    #ifdef __linux__
-    if (fd >= 0) {
-        auto idx = engine::current_task::GetTaskProcessor().RegisterFileDescriptor(
-            fd, EPOLLIN | EPOLLOUT,
-            [this](uint32_t events) {
-                this->OnFdEvent(events);
-            }
-        );
-        if (idx == std::numeric_limits<std::size_t>::max()) {
-            // fallback to watcher_
-            watcher_.Set(fd, GetEvMode(kind));
-        } else {
-            using_register_fd_ = true;
-            registered_fd_ = fd;
-            watcher_.Stop();
+#ifdef __linux__
+    auto* current_processor = engine::current_task::GetTaskProcessor();
+    if (current_processor) {
+        uint32_t epoll_events = 0;
+        switch (kind) {
+            case Kind::kRead:
+                epoll_events = EPOLLIN;
+                break;
+            case Kind::kWrite:
+                epoll_events = EPOLLOUT;
+                break;
+            case Kind::kReadWrite:
+                epoll_events = EPOLLIN | EPOLLOUT;
+                break;
         }
-    } else
-#endif
-    {
-        using_register_fd_ = false;
-        watcher_.Set(fd, GetEvMode(kind));
-    }
 
+        auto callback = [this, kind](uint32_t events) {
+            this->events_that_happened_.store(kind, std::memory_order_relaxed);
+            this->WakeupWaiters();
+        };
+
+        registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
+        
+        if (registered_fd_index_) {
+            use_epoll_ = true;
+            task_processor_ = current_processor;
+            state_ = State::kReadyToUse;
+            return;
+        }
+    }
+#endif
+
+    watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
 }
 
-void FdPoller::Impl::SetupWithRegisterFd(int fd, Kind kind) {
-#ifdef __linux__
-    if (fd < 0) {
-        throw std::runtime_error("Cannot register invalid file descriptor");
-    }
-    auto& tp = engine::current_task::GetTaskProcessor();
-    
-    uint32_t events = 0;
-    switch (kind) {
-        case Kind::kRead:
-            events = EPOLLIN;
-            break;
-        case Kind::kWrite:
-            events = EPOLLOUT;
-            break;
-        case Kind::kReadWrite:
-            events = EPOLLIN | EPOLLOUT;
-            break;
-        default:
-            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
-    }
-    
-    fd_registration_index_ = tp.RegisterFileDescriptor(fd, events, [this](uint32_t epoll_events) {
-        this->OnFdEvent(epoll_events);
-    });
-    registered_fd_ = fd;
-    watcher_.Stop();
-#else
-    throw std::runtime_error("RegisterFd is not available on this platform");
-#endif
-}
-
-void FdPoller::Impl::OnFdEvent(uint32_t events) {
-    events_that_happened_.store(GetUserMode(events), std::memory_order_relaxed);
-    WakeupWaiters();
-}
-
-void FdPoller::Impl::CleanupRegisterFd() {
-#ifdef __linux__
-    if (registered_fd_ != -1) {
-        auto& tp = engine::current_task::GetTaskProcessor();
-        try {
-            tp.UnregisterFileDescriptor(registered_fd_);
-        } catch (const std::exception& ex) {
-            // TODO: log?
-        }
-        registered_fd_ = -1;
-    }
-    fd_registration_index_.reset();
-#endif
-}
-    
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }
 
 }  // namespace engine::io

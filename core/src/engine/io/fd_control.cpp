@@ -87,10 +87,6 @@ void FdControl::Close() {
     Invalidate();
 
     const auto fd = Fd();
-    if (fd == -1) {
-        // FD already invalid, nothing to do.
-        return;
-    }
     if (::close(fd) == -1) {
         const auto error_code = errno;
         std::error_code ec(error_code, std::system_category());
