@@ -194,7 +194,7 @@ void FdPoller::Impl::Invalidate() {
                 try {
                     task_processor_->UnregisterFileDescriptor(fd);
                 } catch (const std::exception& ex) {
-                    LOG_ERROR() << "Failed to unregister FD from epoll: " << ex;
+                   
                 }
             }
             registered_fd_index_.reset();
@@ -308,7 +308,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
                 this->WakeupWaiters();
             };
             
-            registered_fd_index_ = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
+            registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (registered_fd_index_ != std::numeric_limits<std::size_t>::max()) {
                 use_epoll_ = true;
                 task_processor_ = current_processor;
@@ -317,7 +317,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
             }
         }
     } catch (const std::exception& ex) {
-        LOG_DEBUG() << "Failed to use direct epoll, falling back to watcher: " << ex;
+
     }
 #endif
 
