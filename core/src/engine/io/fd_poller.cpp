@@ -264,16 +264,29 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
 
-    // Try to use RegisterFd first
-    try {
-        SetupWithRegisterFd(fd, kind);
-        using_register_fd_ = true;
-    } catch (const std::exception& ex) {
-        // Fall back to watcher_
+    #ifdef __linux__
+    if (fd >= 0) {
+        auto idx = engine::current_task::GetTaskProcessor().RegisterFd(
+            fd, EPOLLIN | EPOLLOUT,
+            [this](uint32_t events) {
+                this->OnFdEvent(events);
+            }
+        );
+        if (idx == std::numeric_limits<std::size_t>::max()) {
+            // fallback to watcher_
+            watcher_.Set(fd, GetEvMode(kind));
+        } else {
+            using_register_fd_ = true;
+            registered_fd_ = fd;
+            watcher_.Stop();
+        }
+    } else
+#endif
+    {
         using_register_fd_ = false;
         watcher_.Set(fd, GetEvMode(kind));
     }
-    
+
     state_ = State::kReadyToUse;
 }
 
