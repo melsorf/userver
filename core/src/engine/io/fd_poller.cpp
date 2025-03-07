@@ -6,6 +6,8 @@
 #include <engine/task/task_context.hpp>
 #ifdef __linux__
 #include <sys/epoll.h>
+#include <userver/engine/task/task_processor.hpp>
+#include <userver/engine/task/task.hpp>
 #endif
 
 template <>
@@ -66,6 +68,21 @@ FdPoller::Kind GetUserMode(int ev_events) {
 
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
+
+#ifdef __linux__
+uint32_t KindToEpollEvents(FdPoller::Kind kind) {
+    switch (kind) {
+        case FdPoller::Kind::kRead:
+            return EPOLLIN;
+        case FdPoller::Kind::kWrite:
+            return EPOLLOUT;
+        case FdPoller::Kind::kReadWrite:
+            return EPOLLIN | EPOLLOUT;
+        default:
+            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
+    }
+}
+#endif
 
 }  // namespace
 
@@ -158,7 +175,13 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
      * Manually call Stop() here to be sure that after DoWait() no waiter_'s
      * callback (IoWatcherCb) is running.
      */
+#ifdef __linux__
+    if (!use_epoll_) {
+        watcher_.Stop();
+    }
+#else
     watcher_.Stop();
+#endif
     return ret;
 }
 
@@ -168,7 +191,7 @@ void FdPoller::Impl::Invalidate() {
         if (task_processor_ && registered_fd_index_) {
             int fd = watcher_.GetFd();
             if (fd >= 0) {
-                task_processor_->UnregisterFd(fd);
+                task_processor_->UnregisterFileDescriptor(fd);
             }
             registered_fd_index_.reset();
             use_epoll_ = false;
@@ -273,20 +296,9 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 #ifdef __linux__
     auto* current_processor = engine::current_task::GetTaskProcessor();
     if (current_processor) {
-        uint32_t epoll_events = 0;
-        switch (kind) {
-            case Kind::kRead:
-                epoll_events = EPOLLIN;
-                break;
-            case Kind::kWrite:
-                epoll_events = EPOLLOUT;
-                break;
-            case Kind::kReadWrite:
-                epoll_events = EPOLLIN | EPOLLOUT;
-                break;
-        }
+        uint32_t epoll_events = KindToEpollEvents(kind);
 
-        auto callback = [this, kind](uint32_t events) {
+        auto callback = [this, kind](uint32_t /*events*/) {
             this->events_that_happened_.store(kind, std::memory_order_relaxed);
             this->WakeupWaiters();
         };
