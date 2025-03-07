@@ -266,7 +266,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
 
     #ifdef __linux__
     if (fd >= 0) {
-        auto idx = engine::current_task::GetTaskProcessor().RegisterFd(
+        auto idx = engine::current_task::GetTaskProcessor().RegisterFileDescriptor(
             fd, EPOLLIN | EPOLLOUT,
             [this](uint32_t events) {
                 this->OnFdEvent(events);
