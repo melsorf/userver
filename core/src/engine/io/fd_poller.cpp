@@ -6,8 +6,8 @@
 #include <engine/task/task_context.hpp>
 #ifdef __linux__
 #include <sys/epoll.h>
-#include <userver/engine/task/task_processor.hpp>
-#include <engine/task/task.hpp>
+#include <engine/task/task_processor.hpp>
+#include <userver/engine/task/task.hpp>
 #endif
 
 template <>
