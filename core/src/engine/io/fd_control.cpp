@@ -87,12 +87,17 @@ void FdControl::Close() {
     Invalidate();
 
     const auto fd = Fd();
-    if (::close(fd) == -1) {
-        const auto error_code = errno;
-        std::error_code ec(error_code, std::system_category());
-        UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
-        LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
+    if (fd != -1) {
+        if (::close(fd) == -1) {
+            const auto error_code = errno;
+            std::error_code ec(error_code, std::system_category());
+            UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
+            // LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
+        }
+    } else {
+        // LOG_WARNING() << "FdControl::Close: fd is already -1";
     }
+
 
     read_.WakeupWaiters();
     write_.WakeupWaiters();
