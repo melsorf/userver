@@ -294,15 +294,15 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
 #ifdef __linux__
-    auto* current_processor = engine::current_task::GetTaskProcessor();
-    if (current_processor) {
+    try {
+        auto* current_processor = &engine::current_task::GetTaskProcessor();
         uint32_t epoll_events = KindToEpollEvents(kind);
 
         auto callback = [this, kind](uint32_t /*events*/) {
             this->events_that_happened_.store(kind, std::memory_order_relaxed);
             this->WakeupWaiters();
         };
-
+        
         registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
         
         if (registered_fd_index_) {
@@ -311,6 +311,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
             state_ = State::kReadyToUse;
             return;
         }
+    } catch (...) {
+        // fall back to using the watcher_
     }
 #endif
 
