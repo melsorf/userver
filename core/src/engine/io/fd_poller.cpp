@@ -191,7 +191,11 @@ void FdPoller::Impl::Invalidate() {
         if (task_processor_ && registered_fd_index_) {
             int fd = watcher_.GetFd();
             if (fd >= 0) {
-                task_processor_->UnregisterFileDescriptor(fd);
+                try {
+                    task_processor_->UnregisterFileDescriptor(fd);
+                } catch (const std::exception& ex) {
+                    LOG_ERROR() << "Failed to unregister FD from epoll: " << ex;
+                }
             }
             registered_fd_index_.reset();
             use_epoll_ = false;
@@ -295,24 +299,25 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
 #ifdef __linux__
     try {
-        auto* current_processor = &engine::current_task::GetTaskProcessor();
-        uint32_t epoll_events = KindToEpollEvents(kind);
-
-        auto callback = [this, kind](uint32_t /*events*/) {
-            this->events_that_happened_.store(kind, std::memory_order_relaxed);
-            this->WakeupWaiters();
-        };
-        
-        registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
-        
-        if (registered_fd_index_) {
-            use_epoll_ = true;
-            task_processor_ = current_processor;
-            state_ = State::kReadyToUse;
-            return;
+        auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
+        if (current_processor && fd >= 0) {
+            uint32_t epoll_events = KindToEpollEvents(kind);
+            
+            auto callback = [this, kind](uint32_t /*events*/) {
+                this->events_that_happened_.store(kind, std::memory_order_relaxed);
+                this->WakeupWaiters();
+            };
+            
+            registered_fd_index_ = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
+            if (registered_fd_index_ != std::numeric_limits<std::size_t>::max()) {
+                use_epoll_ = true;
+                task_processor_ = current_processor;
+                state_ = State::kReadyToUse;
+                return;
+            }
         }
-    } catch (...) {
-        // fall back to using the watcher_
+    } catch (const std::exception& ex) {
+        LOG_DEBUG() << "Failed to use direct epoll, falling back to watcher: " << ex;
     }
 #endif
 

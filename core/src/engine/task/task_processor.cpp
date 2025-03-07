@@ -129,6 +129,15 @@ int CreateEventFd() {
 
 }  // namespace
 
+
+namespace current_task {
+    TaskProcessor* GetTaskProcessorUnchecked() noexcept {
+        auto* context = GetCurrentTaskContextUnchecked();
+        if (!context) return nullptr;
+        return &context->GetTaskProcessor();
+    }
+}
+
 TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::TaskProcessorPools> pools)
     : task_queue_(MakeTaskQueue(config)),
     task_counter_(config.worker_threads),

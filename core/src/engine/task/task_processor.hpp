@@ -29,6 +29,10 @@ class TaskProcessorPools;
 class CountedCoroutinePtr;
 }  // namespace impl
 
+namespace current_task {
+    TaskProcessor* GetTaskProcessorUnchecked() noexcept;
+} 
+
 namespace ev {
 class ThreadPool;
 }  // namespace ev
