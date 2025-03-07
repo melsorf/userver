@@ -4,6 +4,9 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
