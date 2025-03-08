@@ -311,8 +311,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor && fd >= 0) {
             uint32_t epoll_events = KindToEpollEvents(kind);
+            auto& waiters_ref = *waiters_;
             auto callback_state = std::make_shared<CallbackState>(
-                [this]() { this->WakeupWaiters(); });
+                [waiters_ptr = &waiters_ref]() { 
+                    waiters_ptr->SetSignalAndWakeupOne(); 
+                });
+            
             auto callback = [state = std::move(callback_state), kind](uint32_t /*events*/) {
                 state->events_that_happened_.store(kind, std::memory_order_relaxed);
                 state->wakeup_function();
