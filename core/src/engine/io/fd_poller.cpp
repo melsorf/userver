@@ -86,7 +86,7 @@ uint32_t KindToEpollEvents(FdPoller::Kind kind) {
 
 }  // namespace
 
-struct FdPoller::Impl final : public engine::impl::ContextAccessor, public std::enable_shared_from_this<FdPoller::Impl> {
+struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     Impl(ev::ThreadControl control);
 
     ~Impl();
@@ -194,7 +194,7 @@ void FdPoller::Impl::Invalidate() {
                 try {
                     task_processor_->UnregisterFileDescriptor(fd);
                 } catch (const std::exception& ex) {
-                   
+                   // ignore
                 }
             }
             registered_fd_index_.reset();
@@ -204,6 +204,7 @@ void FdPoller::Impl::Invalidate() {
     } else {
         StopWatcher();
     }
+    state_.store(State::kInvalid, std::memory_order_relaxed);
 #else
     StopWatcher();
 #endif
@@ -304,11 +305,9 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor && fd >= 0) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             std::shared_ptr<FdPoller::Impl> self = shared_from_this();
-            auto callback = [weak_self = std::weak_ptr<FdPoller::Impl>(self), kind](uint32_t /*events*/) {
-                if (auto locked = weak_self.lock()) {
-                    locked->events_that_happened_.store(kind, std::memory_order_relaxed);
-                    locked->WakeupWaiters();
-                }
+            auto callback = [this, kind](uint32_t /*events*/) {
+                events_that_happened_.store(kind, std::memory_order_relaxed);
+                WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
