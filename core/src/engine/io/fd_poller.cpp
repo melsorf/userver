@@ -86,7 +86,7 @@ uint32_t KindToEpollEvents(FdPoller::Kind kind) {
 
 }  // namespace
 
-struct FdPoller::Impl final : public engine::impl::ContextAccessor {
+struct FdPoller::Impl final : public engine::impl::ContextAccessor, public std::enable_shared_from_this<FdPoller::Impl> {
     Impl(ev::ThreadControl control);
 
     ~Impl();
@@ -298,14 +298,17 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     UASSERT(fd != -1);
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-    #ifdef __linux__
+#ifdef __linux__
     if (register_epollet) {
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor && fd >= 0) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto callback = [this, kind](uint32_t /*events*/) {
-                this->events_that_happened_.store(kind, std::memory_order_relaxed);
-                this->WakeupWaiters();
+            std::shared_ptr<FdPoller::Impl> self = shared_from_this();
+            auto callback = [weak_self = std::weak_ptr<FdPoller::Impl>(self), kind](uint32_t /*events*/) {
+                if (auto locked = weak_self.lock()) {
+                    locked->events_that_happened_.store(kind, std::memory_order_relaxed);
+                    locked->WakeupWaiters();
+                }
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
