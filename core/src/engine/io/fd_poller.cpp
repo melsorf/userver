@@ -316,6 +316,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 return;
             }
             // fallback below
+        }
     }
 #endif
     watcher_.Set(fd, GetEvMode(kind));
