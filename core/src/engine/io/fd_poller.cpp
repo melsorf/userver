@@ -96,7 +96,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     bool IsValid() const noexcept;
 
     void Invalidate();
-    void Reset(int fd, Kind kind);
+    void Reset(int fd, Kind kind, bool register_epollet = true);
 
     void StopWatcher() noexcept;
 
@@ -270,7 +270,7 @@ std::optional<FdPoller::Kind> FdPoller::GetReady() noexcept {
 
 engine::impl::ContextAccessor* FdPoller::TryGetContextAccessor() noexcept { return &*pimpl_; }
 
-void FdPoller::Reset(int fd, Kind kind) { pimpl_->Reset(fd, kind); }
+void FdPoller::Reset(int fd, Kind kind, bool register_epollet) { pimpl_->Reset(fd, kind); }
 
 void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 
@@ -294,33 +294,33 @@ void FdPoller::SwitchStateToReadyToUse() {
     );
 }
 
-void FdPoller::Impl::Reset(int fd, Kind kind) {
+void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
 #ifdef __linux__
-    try {
-        auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
-        if (current_processor && fd >= 0) {
-            uint32_t epoll_events = KindToEpollEvents(kind);
-            
-            auto callback = [this, kind](uint32_t /*events*/) {
-                this->events_that_happened_.store(kind, std::memory_order_relaxed);
-                this->WakeupWaiters();
-            };
-            
-            registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
-            if (registered_fd_index_ != std::numeric_limits<std::size_t>::max()) {
-                use_epoll_ = true;
-                task_processor_ = current_processor;
-                state_ = State::kReadyToUse;
-                return;
+    if (register_epollet) {
+        try {
+            auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
+            if (current_processor && fd >= 0) {
+                uint32_t epoll_events = KindToEpollEvents(kind);
+                auto callback = [this, kind](uint32_t /*events*/) {
+                    this->events_that_happened_.store(kind, std::memory_order_relaxed);
+                    this->WakeupWaiters();
+                };
+                
+                registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
+                if (registered_fd_index_ != std::numeric_limits<std::size_t>::max()) {
+                    use_epoll_ = true;
+                    task_processor_ = current_processor;
+                    state_ = State::kReadyToUse;
+                    return;
+                }
             }
+        } catch (const std::exception& ex) {
+            // fallback below
         }
-    } catch (const std::exception& ex) {
-
     }
 #endif
-
     watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
 }

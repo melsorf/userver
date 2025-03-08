@@ -78,7 +78,7 @@ FdControlHolder FdControl::Adopt(int fd) {
     SetNonblock(fd);
     ReduceSigpipe(fd);
     fd_control->read_.Reset(fd, Direction::Kind::kRead);
-    fd_control->write_.Reset(fd, Direction::Kind::kWrite);
+    fd_control->write_.ResetWithoutRegistration(fd, Direction::Kind::kWrite);
     return fd_control;
 }
 

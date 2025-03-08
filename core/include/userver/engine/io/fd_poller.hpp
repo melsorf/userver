@@ -67,7 +67,7 @@ public:
     /// Setup fd and kind to wait for. After Reset() you may call Wait().
     /// FdPoller does not take the ownership of `fd`, you still have to close `fd`
     /// when you're done.
-    void Reset(int fd, Kind kind);
+    void Reset(int fd, Kind kind, bool register_epollet = true);
 
     /// Wait for an event kind that was passed in the latest Reset() call. If the
     /// operation (read/write) can already be handled, Wait() returns
