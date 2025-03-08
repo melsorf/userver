@@ -72,6 +72,10 @@ FdControl::~FdControl() {
 }
 
 FdControlHolder FdControl::Adopt(int fd) {
+    if (fd == -1) {
+        LOG_ERROR() << "FdControl::Adopt: fd = -1";
+        return;
+    }
     FdControlHolder fd_control{new FdControl(current_task::GetEventThread())};
     // TODO: add conditional CLOEXEC set
     SetCloexec(fd);
@@ -92,10 +96,10 @@ void FdControl::Close() {
             const auto error_code = errno;
             std::error_code ec(error_code, std::system_category());
             UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
-            // LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
+            LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
         }
     } else {
-        // LOG_WARNING() << "FdControl::Close: fd is already -1";
+        // fd is already -1
     }
 
 
