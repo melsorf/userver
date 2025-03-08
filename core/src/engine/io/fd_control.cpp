@@ -73,10 +73,6 @@ FdControl::~FdControl() {
 }
 
 FdControlHolder FdControl::Adopt(int fd) {
-    if (fd == -1) {
-        LOG_ERROR() << "FdControl::Adopt: fd = -1";
-        throw IoSystemError(-1, "Invalid file descriptor");
-    }
     FdControlHolder fd_control{new FdControl(current_task::GetEventThread())};
     // TODO: add conditional CLOEXEC set
     SetCloexec(fd);

@@ -295,30 +295,27 @@ void FdPoller::SwitchStateToReadyToUse() {
 }
 
 void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
+    UASSERT(fd != -1);
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-#ifdef __linux__
+    #ifdef __linux__
     if (register_epollet) {
-        try {
-            auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
-            if (current_processor && fd >= 0) {
-                uint32_t epoll_events = KindToEpollEvents(kind);
-                auto callback = [this, kind](uint32_t /*events*/) {
-                    this->events_that_happened_.store(kind, std::memory_order_relaxed);
-                    this->WakeupWaiters();
-                };
-                
-                registered_fd_index_ = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
-                if (registered_fd_index_ != std::numeric_limits<std::size_t>::max()) {
-                    use_epoll_ = true;
-                    task_processor_ = current_processor;
-                    state_ = State::kReadyToUse;
-                    return;
-                }
+        auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
+        if (current_processor && fd >= 0) {
+            uint32_t epoll_events = KindToEpollEvents(kind);
+            auto callback = [this, kind](uint32_t /*events*/) {
+                this->events_that_happened_.store(kind, std::memory_order_relaxed);
+                this->WakeupWaiters();
+            };
+            auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
+            if (reg_index.has_value()) {
+                registered_fd_index_ = reg_index;
+                use_epoll_ = true;
+                task_processor_ = current_processor;
+                state_ = State::kReadyToUse;
+                return;
             }
-        } catch (const std::exception& ex) {
             // fallback below
-        }
     }
 #endif
     watcher_.Set(fd, GetEvMode(kind));
