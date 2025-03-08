@@ -270,7 +270,7 @@ std::optional<FdPoller::Kind> FdPoller::GetReady() noexcept {
 
 engine::impl::ContextAccessor* FdPoller::TryGetContextAccessor() noexcept { return &*pimpl_; }
 
-void FdPoller::Reset(int fd, Kind kind, bool register_epollet) { pimpl_->Reset(fd, kind); }
+void FdPoller::Reset(int fd, Kind kind, bool register_epollet) { pimpl_->Reset(fd, kind, register_epollet); }
 
 void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 
