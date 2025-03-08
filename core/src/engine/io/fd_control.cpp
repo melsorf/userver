@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include <userver/engine/exception.hpp>
 #include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -74,7 +75,7 @@ FdControl::~FdControl() {
 FdControlHolder FdControl::Adopt(int fd) {
     if (fd == -1) {
         LOG_ERROR() << "FdControl::Adopt: fd = -1";
-        return;
+        throw IoSystemError(-1, "Invalid file descriptor");
     }
     FdControlHolder fd_control{new FdControl(current_task::GetEventThread())};
     // TODO: add conditional CLOEXEC set
