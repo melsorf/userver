@@ -304,7 +304,6 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor && fd >= 0) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            std::shared_ptr<FdPoller::Impl> self = shared_from_this();
             auto callback = [this, kind](uint32_t /*events*/) {
                 events_that_happened_.store(kind, std::memory_order_relaxed);
                 WakeupWaiters();
