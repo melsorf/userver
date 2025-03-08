@@ -204,7 +204,6 @@ void FdPoller::Impl::Invalidate() {
     } else {
         StopWatcher();
     }
-    state_.store(State::kInvalid, std::memory_order_relaxed);
 #else
     StopWatcher();
 #endif
