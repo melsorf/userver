@@ -39,6 +39,14 @@ namespace engine::io {
 
 namespace {
 
+struct CallbackState {
+    std::atomic<FdPoller::Kind> events_that_happened_{};
+    std::function<void()> wakeup_function;
+    
+    explicit CallbackState(std::function<void()> wakeup) 
+        : wakeup_function(std::move(wakeup)) {}
+};
+
 int GetEvMode(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:
@@ -303,9 +311,11 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor && fd >= 0) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto callback = [this, kind](uint32_t /*events*/) {
-                events_that_happened_.store(kind, std::memory_order_relaxed);
-                WakeupWaiters();
+            auto callback_state = std::make_shared<CallbackState>(
+                [this]() { this->WakeupWaiters(); });
+            auto callback = [state = std::move(callback_state), kind](uint32_t /*events*/) {
+                state->events_that_happened_.store(kind, std::memory_order_relaxed);
+                state->wakeup_function();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
