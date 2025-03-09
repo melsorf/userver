@@ -41,15 +41,17 @@ int ToMySQLEvents(engine::io::FdPoller::Kind kind) {
 #ifdef __linux__
     filtered &= ~EPOLLET;
 #endif
-    switch (static_cast<Kind>(filtered)) {
-        case Kind::kReadWrite:
-            return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
-        case Kind::kRead:
-            return MYSQL_WAIT_READ;
-        case Kind::kWrite:
-            return MYSQL_WAIT_WRITE;
+    const bool is_read = filtered & static_cast<int>(Kind::kRead);
+    const bool is_write = filtered & static_cast<int>(Kind::kWrite);
+    if (is_read && is_write) {
+        return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
     }
-
+    if (is_read) {
+        return MYSQL_WAIT_READ;
+    }
+    if (is_write) {
+        return MYSQL_WAIT_WRITE;
+    }
     UINVARIANT(false, "Invalid engine::io::FdPoller::Kind enum value");
 }
 
