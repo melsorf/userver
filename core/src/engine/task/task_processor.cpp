@@ -585,10 +585,11 @@ void TaskProcessor::UnregisterFd(int fd) {
         fd_to_thread_index_.erase(it);
     }
 
-    index = index % per_thread_epoll_fds_.size();
-
-    std::lock_guard<std::mutex> lock(epoll_mtx_);
-    if (!per_thread_epoll_fds_.empty()) {
+    if (index >= per_thread_epoll_fds_.size()) {
+        LOG_ERROR() << "Invalid thread index " << index << " for fd " << fd 
+            << ", max index is " << (per_thread_epoll_fds_.size() - 1);
+    } else {
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
         int epoll_fd = per_thread_epoll_fds_[index];
         if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
             if (errno != ENOENT) {
@@ -596,7 +597,11 @@ void TaskProcessor::UnregisterFd(int fd) {
             }
         }
     }
-    fd_callbacks_.erase(fd);
+
+    {
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
+        fd_callbacks_.erase(fd);
+    }
 
     WakeupEventLoop();
 }
