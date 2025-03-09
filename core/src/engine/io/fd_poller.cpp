@@ -220,7 +220,7 @@ void FdPoller::Impl::Invalidate() {
             registered_fd_index_.reset();
             use_epoll_ = false;
             task_processor_ = nullptr;
-            // fd_ = -1;
+            fd_ = -1;
         }
     } else {
         StopWatcher();
@@ -356,7 +356,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     watcher_.Set(fd, GetEvMode(kind));
 #ifdef __linux__
     use_epoll_ = false;
-    // fd_ = -1;
+    fd_ = -1;
 #endif
     state_ = State::kReadyToUse;
 }
