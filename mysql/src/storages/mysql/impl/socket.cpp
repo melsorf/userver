@@ -33,7 +33,8 @@ engine::io::FdPoller::Kind ToUserverEvents(int mysql_events) {
 int ToMySQLEvents(engine::io::FdPoller::Kind kind) {
     using Kind = engine::io::FdPoller::Kind;
 
-    switch (kind) {
+    const int filtered = static_cast<int>(kind) & ~EPOLLET;
+    switch (static_cast<Kind>(filtered)) {
         case Kind::kReadWrite:
             return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
         case Kind::kRead:
