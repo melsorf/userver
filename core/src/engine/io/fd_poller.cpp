@@ -160,6 +160,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     std::atomic<FdPoller::Kind> events_that_happened_{};
 #ifdef __linux__
     bool use_epoll_{false};
+    int fd_{-1};
     std::optional<std::size_t> registered_fd_index_;
     engine::TaskProcessor* task_processor_{nullptr};
 #endif
@@ -197,10 +198,9 @@ void FdPoller::Impl::Invalidate() {
 #ifdef __linux__
     if (use_epoll_) {
         if (task_processor_ && registered_fd_index_) {
-            int fd = watcher_.GetFd();
-            if (fd >= 0) {
+            if (fd_ >= 0) {
                 try {
-                    task_processor_->UnregisterFileDescriptor(fd);
+                    task_processor_->UnregisterFileDescriptor(fd_);
                 } catch (const std::exception& ex) {
                    // ignore
                 }
@@ -208,6 +208,7 @@ void FdPoller::Impl::Invalidate() {
             registered_fd_index_.reset();
             use_epoll_ = false;
             task_processor_ = nullptr;
+            fd_ = -1;
         }
     } else {
         StopWatcher();
@@ -257,7 +258,13 @@ FdPoller::operator bool() const noexcept { return IsValid(); }
 
 bool FdPoller::IsValid() const noexcept { return pimpl_->IsValid(); }
 
-int FdPoller::GetFd() const noexcept { return pimpl_->watcher_.GetFd(); }
+int FdPoller::GetFd() const noexcept { 
+#ifdef __linux__
+    if (pimpl_->use_epoll_)
+        return pimpl_->fd_;
+#endif
+    return pimpl_->watcher_.GetFd(); 
+}
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
@@ -305,7 +312,6 @@ void FdPoller::SwitchStateToReadyToUse() {
 void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
     UINVARIANT(fd >= 0, "FdPoller::Reset: fd is -1");
     UASSERT(!IsValid());
-    watcher_.Set(fd, GetEvMode(kind));
 
 #ifdef __linux__
     if (register_epollet) {
@@ -324,6 +330,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
+                fd_ = fd;
                 registered_fd_index_ = reg_index;
                 use_epoll_ = true;
                 task_processor_ = current_processor;
@@ -332,6 +339,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             }
         }
     }
+    // Fallback to watcher_
+    watcher_.Set(fd, GetEvMode(kind));
+    use_epoll_ = false;
+    fd_ = -1;
+#else
+    watcher_.Set(fd, GetEvMode(kind));
 #endif
     state_ = State::kReadyToUse;
 }
