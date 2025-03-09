@@ -170,7 +170,21 @@ void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
 FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
 
-FdPoller::Impl::~Impl() = default;
+FdPoller::Impl::~Impl() {
+#ifdef __linux__
+    if (use_epoll_ && fd_ >= 0) {
+        // Make sure we close the fd if we're still in epoll mode
+        try {
+            if (task_processor_ && registered_fd_index_) {
+                task_processor_->UnregisterFileDescriptor(fd_);
+            }
+            ::close(fd_);
+        } catch (...) {
+            // Destructors shouldn't throw
+        }
+    }
+#endif
+}
 
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
@@ -204,6 +218,7 @@ void FdPoller::Impl::Invalidate() {
                 } catch (const std::exception& ex) {
                    // ignore
                 }
+                ::close(fd_);
             }
             registered_fd_index_.reset();
             use_epoll_ = false;
