@@ -218,7 +218,6 @@ void FdPoller::Impl::Invalidate() {
                 } catch (const std::exception& ex) {
                    // ignore
                 }
-                ::close(fd_);
             }
             registered_fd_index_.reset();
             use_epoll_ = false;
