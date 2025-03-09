@@ -5,10 +5,6 @@
 
 #include <storages/mysql/impl/mariadb_include.hpp>
 
-#ifdef __linux__
-#include <sys/epoll.h>
-#endif
-
 USERVER_NAMESPACE_BEGIN
 
 namespace storages::mysql::impl {
@@ -37,21 +33,15 @@ engine::io::FdPoller::Kind ToUserverEvents(int mysql_events) {
 int ToMySQLEvents(engine::io::FdPoller::Kind kind) {
     using Kind = engine::io::FdPoller::Kind;
 
-    int filtered = static_cast<int>(kind);
-#ifdef __linux__
-    filtered &= ~EPOLLET;
-#endif
-    const bool is_read = filtered & static_cast<int>(Kind::kRead);
-    const bool is_write = filtered & static_cast<int>(Kind::kWrite);
-    if (is_read && is_write) {
-        return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
+    switch (kind) {
+        case Kind::kReadWrite:
+            return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
+        case Kind::kRead:
+            return MYSQL_WAIT_READ;
+        case Kind::kWrite:
+            return MYSQL_WAIT_WRITE;
     }
-    if (is_read) {
-        return MYSQL_WAIT_READ;
-    }
-    if (is_write) {
-        return MYSQL_WAIT_WRITE;
-    }
+
     UINVARIANT(false, "Invalid engine::io::FdPoller::Kind enum value");
 }
 
