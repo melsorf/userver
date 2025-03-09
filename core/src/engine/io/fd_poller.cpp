@@ -177,6 +177,7 @@ FdPoller::Impl::~Impl() {
             if (task_processor_ && registered_fd_index_) {
                 task_processor_->UnregisterFileDescriptor(fd_);
             }
+            ::close(fd_);  // Close duplicated fd
         } catch (...) {
             // Destructors shouldn't throw
         }
@@ -213,6 +214,7 @@ void FdPoller::Impl::Invalidate() {
             if (fd_ >= 0) {
                 try {
                     task_processor_->UnregisterFileDescriptor(fd_);
+                    ::close(fd_);  // Close duplicated fd
                 } catch (const std::exception& ex) {
                    // ignore
                 }
@@ -340,14 +342,20 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 state->events_that_happened_.store(kind, std::memory_order_relaxed);
                 state->wakeup_function();
             };
-            auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
-            if (reg_index.has_value()) {
-                fd_ = fd;
-                registered_fd_index_ = reg_index;
-                use_epoll_ = true;
-                task_processor_ = current_processor;
-                state_ = State::kReadyToUse;
-                return;
+            // Create a duplicate of the fd to avoid issues when original fd is closed
+            int dup_fd = ::dup(fd);
+            if (dup_fd >= 0) {
+                auto reg_index = current_processor->RegisterFileDescriptor(dup_fd, epoll_events, std::move(callback));
+                if (reg_index.has_value()) {
+                    fd_ = dup_fd;
+                    registered_fd_index_ = reg_index;
+                    use_epoll_ = true;
+                    task_processor_ = current_processor;
+                    state_ = State::kReadyToUse;
+                    return;
+                }
+                // Registration failed, close duplicate
+                ::close(dup_fd);
             }
         }
     }
