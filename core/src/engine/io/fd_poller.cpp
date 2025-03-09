@@ -178,7 +178,6 @@ FdPoller::Impl::~Impl() {
             if (task_processor_ && registered_fd_index_) {
                 task_processor_->UnregisterFileDescriptor(fd_);
             }
-            ::close(fd_);
         } catch (...) {
             // Destructors shouldn't throw
         }
