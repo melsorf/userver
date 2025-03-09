@@ -316,7 +316,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
 #ifdef __linux__
     if (register_epollet) {
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
-        if (current_processor && fd >= 0) {
+        if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto& waiters_ref = *waiters_;
             auto callback_state = std::make_shared<CallbackState>(
@@ -339,12 +339,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             }
         }
     }
+#endif
     // Fallback to watcher_
     watcher_.Set(fd, GetEvMode(kind));
+#ifdef __linux__
     use_epoll_ = false;
     fd_ = -1;
-#else
-    watcher_.Set(fd, GetEvMode(kind));
 #endif
     state_ = State::kReadyToUse;
 }
