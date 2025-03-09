@@ -87,9 +87,6 @@ void FdControl::Close() {
     if (!IsValid()) return;
     const auto fd = Fd();
 
-    read_.WakeupWaiters();
-    write_.WakeupWaiters();
-
     Invalidate();
     if (fd != -1) {
         if (::close(fd) == -1) {
@@ -99,6 +96,8 @@ void FdControl::Close() {
             LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
         }
     }
+    read_.WakeupWaiters();
+    write_.WakeupWaiters();
 }
 
 void FdControl::Invalidate() {
