@@ -549,6 +549,10 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
         return std::numeric_limits<std::size_t>::max();
     }
     if (UseEvThreadPool()) return 0;
+    if (per_thread_epoll_fds_.empty()) {
+        LOG_WARNING() << "RegisterFd called but per_thread_epoll_fds_ is empty";
+        return std::numeric_limits<std::size_t>::max();
+    }
     std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
 
     struct epoll_event ev;
@@ -558,7 +562,9 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
     {
         std::lock_guard<std::mutex> lock(epoll_mtx_);
         if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
-            throw utils::TracefulException("Failed to add fd to per-thread epoll");
+            LOG_WARNING() << "Failed to add fd " << fd << " to per-thread epoll: " 
+                << strerror(errno);
+            return std::numeric_limits<std::size_t>::max();
         }
         fd_callbacks_[fd] = std::move(callback);
     }
