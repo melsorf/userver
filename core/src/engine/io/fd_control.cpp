@@ -85,9 +85,8 @@ FdControlHolder FdControl::Adopt(int fd) {
 
 void FdControl::Close() {
     if (!IsValid()) return;
-    const auto fd = Fd();
-
     Invalidate();
+    const auto fd = Fd();
     if (fd != -1) {
         if (::close(fd) == -1) {
             const auto error_code = errno;
