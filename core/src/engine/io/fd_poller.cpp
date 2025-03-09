@@ -303,7 +303,9 @@ void FdPoller::SwitchStateToReadyToUse() {
 }
 
 void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
-    UASSERT(fd != -1);
+    if (fd < 0) {
+        return;
+    }
     UASSERT(!IsValid());
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
 #ifdef __linux__
@@ -326,6 +328,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 registered_fd_index_ = reg_index;
                 use_epoll_ = true;
                 task_processor_ = current_processor;
+                watcher_.Set(fd, GetEvMode(kind));
                 state_ = State::kReadyToUse;
                 return;
             }
@@ -333,6 +336,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         }
     }
 #endif
+    UINVARIANT(fd >= 0, "FdPoller::Reset (fallback): fd is -1");
     watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
 }
