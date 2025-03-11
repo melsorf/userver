@@ -83,23 +83,19 @@ FdControlHolder FdControl::Adopt(int fd) {
     return fd_control;
 }
 
-void FdControl::Close() {
+id FdControl::Close() {
     if (!IsValid()) return;
     const auto fd = Fd();
-     Invalidate();
-     if (fd != -1) {
-         if (::close(fd) == -1) {
-             const auto error_code = errno;
-             std::error_code ec(error_code, std::system_category());
-             UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
-             LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
-         }
-     } else {
-         // fd is already -1
-     }
-     read_.WakeupWaiters();
-     write_.WakeupWaiters();
- }
+    Invalidate();
+    if (::close(fd) == -1) {
+        const auto error_code = errno;
+        std::error_code ec(error_code, std::system_category());
+        UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
+        LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
+    }
+    read_.WakeupWaiters();
+    write_.WakeupWaiters();
+}
 
 void FdControl::Invalidate() {
     read_.Invalidate();

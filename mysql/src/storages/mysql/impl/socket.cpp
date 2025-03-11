@@ -4,9 +4,6 @@
 #include <userver/storages/mysql/exceptions.hpp>
 
 #include <storages/mysql/impl/mariadb_include.hpp>
-#ifdef __linux__
-#include <sys/epoll.h>
-#endif
 
 USERVER_NAMESPACE_BEGIN
 
@@ -36,13 +33,7 @@ engine::io::FdPoller::Kind ToUserverEvents(int mysql_events) {
 int ToMySQLEvents(engine::io::FdPoller::Kind kind) {
     using Kind = engine::io::FdPoller::Kind;
 
-#ifdef __linux__
-    int filtered = static_cast<int>(kind) & ~EPOLLET;
-#else
-    int filtered = static_cast<int>(kind);
-#endif
-
-    switch (static_cast<Kind>(filtered)) {
+    switch (kind) {
         case Kind::kReadWrite:
             return MYSQL_WAIT_READ | MYSQL_WAIT_WRITE;
         case Kind::kRead:
