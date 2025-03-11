@@ -4,6 +4,9 @@
 #include <userver/storages/mysql/exceptions.hpp>
 
 #include <storages/mysql/impl/mariadb_include.hpp>
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
 
 USERVER_NAMESPACE_BEGIN
 
