@@ -83,7 +83,7 @@ FdControlHolder FdControl::Adopt(int fd) {
     return fd_control;
 }
 
-id FdControl::Close() {
+void FdControl::Close() {
     if (!IsValid()) return;
     const auto fd = Fd();
     Invalidate();
