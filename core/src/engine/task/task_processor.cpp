@@ -737,21 +737,13 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                     auto callback = it->second;
                     auto event_mask = events[i].events;
                     lock.unlock();
+                    uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                     try {
-                        callback(event_mask);
+                        callback(filtered_events);
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {
                         LOG_ERROR() << "Unknown exception in fd callback";
-                    }
-                    lock.lock();
-
-                    // Rearm the fd
-                    struct epoll_event ev;
-                    ev.events = ((event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP)) | EPOLLET);
-                    ev.data.fd = fd;
-                    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-                        LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
                     }
                 }
             }
