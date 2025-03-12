@@ -342,7 +342,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 try {
                     current_processor_copy->UnregisterFileDescriptor(fd_copy);
                 } catch (const std::exception& ex) {
-                    LOG_ERROR() << "Exception while unregistering fd: " << ex;
+                    // LOG_ERROR() << "Exception while unregistering fd: " << ex;
                 }
                 state->wakeup_function();
             };
