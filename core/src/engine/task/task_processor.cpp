@@ -566,7 +566,9 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
                 << strerror(errno);
             return std::numeric_limits<std::size_t>::max();
         }
-        fd_callbacks_[fd] = std::move(callback);
+        fd_callbacks_[fd] = [callback](uint32_t event_mask) {
+            callback(event_mask);
+        };
     }
 
     {

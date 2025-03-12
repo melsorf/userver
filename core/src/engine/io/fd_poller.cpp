@@ -47,6 +47,21 @@ struct CallbackState {
         : wakeup_function(std::move(wakeup)) {}
 };
 
+engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
+    using Kind = engine::io::FdPoller::Kind;
+    if (events & EPOLLIN && events & EPOLLOUT) {
+      return Kind::kReadWrite;
+    } else if (events & EPOLLIN) {
+      return Kind::kRead;
+    } else if (events & EPOLLOUT) {
+      return Kind::kWrite;
+    } else if (events & EPOLLERR || events & EPOLLHUP) 
+      return Kind::kRead;
+    } else {
+      return Kind::kRead; // Default to read
+    }
+  }
+
 int GetEvMode(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:
@@ -333,16 +348,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 });
             
             auto callback = [state = std::move(callback_state)](uint32_t events) {
-                FdPoller::Kind user_mode_kind;
-                if (events & EPOLLIN && events & EPOLLOUT) {
-                    user_mode_kind = FdPoller::Kind::kReadWrite;
-                } else if (events & EPOLLIN) {
-                    user_mode_kind = FdPoller::Kind::kRead;
-                } else if (events & EPOLLOUT) {
-                    user_mode_kind = FdPoller::Kind::kWrite;
-                } else {
-                    user_mode_kind = FdPoller::Kind::kRead; // Default to read
-                }
+                FdPoller::Kind user_mode_kind = EpollEventsToFdPollerKind(events);
                 state->events_that_happened_.store(user_mode_kind, std::memory_order_relaxed);
                 state->wakeup_function();
             };
