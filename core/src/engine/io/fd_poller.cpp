@@ -208,21 +208,17 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 
 void FdPoller::Impl::Invalidate() {
 #ifdef __linux__
-    auto* task_processor = task_processor_;
-    auto registered_fd_index = registered_fd_index_;
-    auto fd = fd_;
-    if (use_epoll_) {
-        if (task_processor && registered_fd_index && fd >= 0) {
-            try {
-                task_processor->UnregisterFileDescriptor(fd);
-            } catch (const std::exception& ex) {
-                // ignore
-            }
+    if (use_epoll_ && task_processor_ && registered_fd_index_ && fd_ >= 0) {
+        try {
+            task_processor_->UnregisterFileDescriptor(fd_);
+        } catch (const std::exception& ex) {
+           // ignore
         }
         registered_fd_index_.reset();
+        use_epoll_ = false;
+        task_processor_ = nullptr;
         fd_ = -1;
-    }
-    else {
+    } else {
         StopWatcher();
     }
 #else
@@ -337,7 +333,17 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 });
             
             auto callback = [state = std::move(callback_state), kind](uint32_t /*events*/) {
-                state->events_that_happened_.store(kind, std::memory_order_relaxed);
+                FdPoller::Kind user_mode_kind;
+                if (events & EPOLLIN && events & EPOLLOUT) {
+                    user_mode_kind = FdPoller::Kind::kReadWrite;
+                } else if (events & EPOLLIN) {
+                    user_mode_kind = FdPoller::Kind::kRead;
+                } else if (events & EPOLLOUT) {
+                    user_mode_kind = FdPoller::Kind::kWrite;
+                } else {
+                    user_mode_kind = FdPoller::Kind::kRead; // Default to read
+                }
+                state->events_that_happened_.store(user_mode_kind, std::memory_order_relaxed);
                 state->wakeup_function();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
