@@ -220,7 +220,6 @@ void FdPoller::Impl::Invalidate() {
             }
         }
         registered_fd_index_.reset();
-        use_epoll_ = false;
         fd_ = -1;
     }
     else {
