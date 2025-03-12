@@ -220,7 +220,7 @@ void FdPoller::Impl::Invalidate() {
             registered_fd_index_.reset();
             use_epoll_ = false;
             task_processor_ = nullptr;
-            fd_ = -1;
+            // fd_ = -1;
         }
     } else {
         StopWatcher();
@@ -336,14 +336,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     waiters_ptr->SetSignalAndWakeupOne(); 
                 });
             
-            auto callback = [state = std::move(callback_state), kind, fd_copy = fd, current_processor_copy = current_processor](uint32_t /*events*/) {
+            auto callback = [state = std::move(callback_state), kind](uint32_t /*events*/) {
                 state->events_that_happened_.store(kind, std::memory_order_relaxed);
-                
-                try {
-                    current_processor_copy->UnregisterFileDescriptor(fd_copy);
-                } catch (const std::exception& ex) {
-                    // LOG_ERROR() << "Exception while unregistering fd: " << ex;
-                }
                 state->wakeup_function();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
