@@ -214,7 +214,7 @@ void FdPoller::Impl::Invalidate() {
     if (use_epoll_) {
         if (task_processor && registered_fd_index && fd >= 0) {
             try {
-                task_processor_->UnregisterFileDescriptor(fd_);
+                task_processor->UnregisterFileDescriptor(fd);
             } catch (const std::exception& ex) {
                 // ignore
             }
