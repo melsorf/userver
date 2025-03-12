@@ -332,7 +332,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     waiters_ptr->SetSignalAndWakeupOne(); 
                 });
             
-            auto callback = [state = std::move(callback_state), kind](uint32_t /*events*/) {
+            auto callback = [state = std::move(callback_state), kind](uint32_t events) {
                 FdPoller::Kind user_mode_kind;
                 if (events & EPOLLIN && events & EPOLLOUT) {
                     user_mode_kind = FdPoller::Kind::kReadWrite;
