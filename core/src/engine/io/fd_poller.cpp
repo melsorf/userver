@@ -55,7 +55,7 @@ engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
       return Kind::kRead;
     } else if (events & EPOLLOUT) {
       return Kind::kWrite;
-    } else if (events & EPOLLERR || events & EPOLLHUP) 
+    } else if (events & EPOLLERR || events & EPOLLHUP) {
       return Kind::kRead;
     } else {
       return Kind::kRead; // Default to read
