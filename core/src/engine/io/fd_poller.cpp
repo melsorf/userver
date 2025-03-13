@@ -49,17 +49,24 @@ struct CallbackState {
 
 engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
     using Kind = engine::io::FdPoller::Kind;
-    if (events & EPOLLIN && events & EPOLLOUT) {
-      return Kind::kReadWrite;
-    } else if (events & EPOLLIN) {
-      return Kind::kRead;
-    } else if (events & EPOLLOUT) {
-      return Kind::kWrite;
-    } else if (events & EPOLLERR || events & EPOLLHUP) {
-      return Kind::kRead;
-    } else {
-      return Kind::kRead; // Default to read
+
+    bool has_error = (events & EPOLLERR) || (events & EPOLLHUP);
+    bool has_read = events & EPOLLIN;
+    bool has_write = events & EPOLLOUT;
+
+    if (has_read && has_write) {
+        return Kind::kReadWrite;
+    } else if (has_read) {
+        return Kind::kRead;
+    } else if (has_write) {
+        return Kind::kWrite;
+    } else if (has_error) {
+        return Kind::kRead;
     }
+    
+    // Unexpected event combination
+    LOG_WARNING() << "Unexpected epoll event combination: " << events;
+    return Kind::kRead;
   }
 
 int GetEvMode(FdPoller::Kind kind) {
@@ -342,15 +349,9 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto& waiters_ref = *waiters_;
-            auto callback_state = std::make_shared<CallbackState>(
-                [waiters_ptr = &waiters_ref]() { 
-                    waiters_ptr->SetSignalAndWakeupOne(); 
-                });
-            
-            auto callback = [state = std::move(callback_state)](uint32_t events) {
-                FdPoller::Kind user_mode_kind = EpollEventsToFdPollerKind(events);
-                state->events_that_happened_.store(user_mode_kind, std::memory_order_relaxed);
-                state->wakeup_function();
+            auto callback = [this, &waiters_ref](uint32_t events) {
+                this->events_that_happened_.store(EpollEventsToFdPollerKind(events), std::memory_order_relaxed);
+                waiters_ref.SetSignalAndWakeupOne();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
