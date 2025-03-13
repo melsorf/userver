@@ -634,7 +634,18 @@ void TaskProcessor::RearmFileDescriptor(int fd) {
     ev.events = events;
     ev.data.fd = fd;
 
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
+    std::size_t index;
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        auto it = fd_to_thread_index_.find(fd);
+        if (it == fd_to_thread_index_.end()) {
+            throw utils::TracefulException("Failed to find fd in fd_to_thread_index_ map in RearmFileDescriptor");
+        }
+        index = it->second;
+    }
+
+    int epoll_fd = per_thread_epoll_fds_[index];
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) < 0) {
         throw utils::TracefulException(
             fmt::format("Failed to rearm fd {}: {}", fd, strerror(errno)));
     }
