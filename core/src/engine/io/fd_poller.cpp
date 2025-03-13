@@ -327,6 +327,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this](uint32_t events) {
+                events &= ~(EPOLLET);
                 uint32_t effective = 0;
                 if (events & EPOLLIN)
                     effective |= EV_READ;
