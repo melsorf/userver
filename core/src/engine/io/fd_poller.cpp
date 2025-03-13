@@ -47,30 +47,6 @@ struct CallbackState {
         : wakeup_function(std::move(wakeup)) {}
 };
 
-engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
-#ifdef __linux__
-    using Kind = engine::io::FdPoller::Kind;
-
-    bool has_error = (events & EPOLLERR) || (events & EPOLLHUP);
-    bool has_read = events & EPOLLIN;
-    bool has_write = events & EPOLLOUT;
-
-    if (has_read && has_write) {
-        return Kind::kReadWrite;
-    } else if (has_read) {
-        return Kind::kRead;
-    } else if (has_write) {
-        return Kind::kWrite;
-    } else if (has_error) {
-        return Kind::kRead;
-    }
-    
-    // Unexpected event combination
-    // LOG_WARNING() << "Unexpected epoll event combination: " << events;
-    return Kind::kRead;
-#endif
-  }
-
 int GetEvMode(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:
@@ -223,8 +199,6 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 #ifdef __linux__
     if (!use_epoll_) {
         watcher_.Stop();
-    } else {
-        task_processor_->RearmFileDescriptor(fd_);
     }
 #else
     watcher_.Stop();
@@ -352,10 +326,11 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto& waiters_ref = *waiters_;
-            auto callback = [this, &waiters_ref](uint32_t events) {
-                this->events_that_happened_.store(EpollEventsToFdPollerKind(events), std::memory_order_relaxed);
-                waiters_ref.SetSignalAndWakeupOne();
+            auto callback = [this](uint32_t events) {
+                const uint32_t filtered = events & (EV_READ | EV_WRITE);
+                const auto userver_kind = GetUserMode(filtered);
+                events_that_happened_.store(userver_kind, std::memory_order_relaxed);
+                WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {

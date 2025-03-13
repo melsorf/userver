@@ -125,7 +125,6 @@ int CreateEventFd() {
     }
     return fd;
 }
-
 #endif  // __linux__
 
 }  // namespace
@@ -567,9 +566,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
                 << strerror(errno);
             return std::numeric_limits<std::size_t>::max();
         }
-        fd_callbacks_[fd] = [callback](uint32_t event_mask) {
-            callback(event_mask);
-        };
+        fd_callbacks_[fd] = std::move(callback);
     }
 
     {
@@ -625,30 +622,6 @@ std::optional<std::size_t> TaskProcessor::RegisterFileDescriptor(int fd, uint32_
         return std::nullopt;
     }
     return index;
-}
-
-void TaskProcessor::RearmFileDescriptor(int fd) {
-    constexpr uint32_t events = EPOLLIN | EPOLLOUT | EPOLLET;
-
-    struct epoll_event ev{};
-    ev.events = events;
-    ev.data.fd = fd;
-
-    std::size_t index;
-    {
-        std::lock_guard<std::mutex> lock(fd_map_mtx_);
-        auto it = fd_to_thread_index_.find(fd);
-        if (it == fd_to_thread_index_.end()) {
-            throw utils::TracefulException("Failed to find fd in fd_to_thread_index_ map in RearmFileDescriptor");
-        }
-        index = it->second;
-    }
-
-    int epoll_fd = per_thread_epoll_fds_[index];
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) < 0) {
-        throw utils::TracefulException(
-            fmt::format("Failed to rearm fd {}: {}", fd, strerror(errno)));
-    }
 }
 
 void TaskProcessor::WakeupEventLoop() const {
