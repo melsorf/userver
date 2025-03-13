@@ -48,6 +48,7 @@ struct CallbackState {
 };
 
 engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
+#ifdef __linux__
     using Kind = engine::io::FdPoller::Kind;
 
     bool has_error = (events & EPOLLERR) || (events & EPOLLHUP);
@@ -65,8 +66,9 @@ engine::io::FdPoller::Kind EpollEventsToFdPollerKind(uint32_t events) {
     }
     
     // Unexpected event combination
-    LOG_WARNING() << "Unexpected epoll event combination: " << events;
+    // LOG_WARNING() << "Unexpected epoll event combination: " << events;
     return Kind::kRead;
+#endif
   }
 
 int GetEvMode(FdPoller::Kind kind) {
