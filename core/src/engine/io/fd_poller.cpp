@@ -223,6 +223,8 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 #ifdef __linux__
     if (!use_epoll_) {
         watcher_.Stop();
+    } else {
+        task_processor_->RearmFileDescriptor(fd_);
     }
 #else
     watcher_.Stop();

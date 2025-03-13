@@ -125,6 +125,7 @@ int CreateEventFd() {
     }
     return fd;
 }
+
 #endif  // __linux__
 
 }  // namespace
@@ -624,6 +625,19 @@ std::optional<std::size_t> TaskProcessor::RegisterFileDescriptor(int fd, uint32_
         return std::nullopt;
     }
     return index;
+}
+
+void TaskProcessor::RearmFileDescriptor(int fd) {
+    constexpr uint32_t events = EPOLLIN | EPOLLOUT | EPOLLET;
+
+    struct epoll_event ev{};
+    ev.events = events;
+    ev.data.fd = fd;
+
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
+        throw utils::TracefulException(
+            fmt::format("Failed to rearm fd {}: {}", fd, strerror(errno)));
+    }
 }
 
 void TaskProcessor::WakeupEventLoop() const {
