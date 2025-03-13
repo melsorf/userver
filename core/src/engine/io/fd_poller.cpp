@@ -327,8 +327,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this](uint32_t events) {
-                const uint32_t filtered = events & (EV_READ | EV_WRITE);
-                const auto userver_kind = GetUserMode(filtered);
+                uint32_t effective = 0;
+                if (events & EPOLLIN)
+                    effective |= EV_READ;
+                if (events & EPOLLOUT)
+                    effective |= EV_WRITE;
+                const auto userver_kind = GetUserMode(effective);
                 events_that_happened_.store(userver_kind, std::memory_order_relaxed);
                 WakeupWaiters();
             };
