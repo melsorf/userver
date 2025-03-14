@@ -40,6 +40,8 @@ int ToMySQLEvents(engine::io::FdPoller::Kind kind) {
             return MYSQL_WAIT_READ;
         case Kind::kWrite:
             return MYSQL_WAIT_WRITE;
+        case Kind::kInvalid:
+            UINVARIANT(false, "Unexpected FdPoller::Kind::kInvalid");
     }
 
     UINVARIANT(false, "Invalid engine::io::FdPoller::Kind enum value");
