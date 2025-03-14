@@ -36,7 +36,6 @@ public:
         kRead = 1,       /// < wait for read availability
         kWrite = 2,      /// < wait for write availability
         kReadWrite = 3,  /// < wait for either read or write availability
-        kInvalid = 4,
     };
 
     /// Constructor for FdPoller. `control` parameter could be obtained via

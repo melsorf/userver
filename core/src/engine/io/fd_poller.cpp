@@ -74,7 +74,7 @@ FdPoller::Kind GetUserMode(int ev_events) {
         return FdPoller::Kind::kWrite;
     }
 #ifdef __linux__
-    return FdPoller::Kind::kInvalid;
+    return FdPoller::Kind::kRead;
 #endif
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
@@ -335,10 +335,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 if (events & EPOLLOUT)
                     effective |= EV_WRITE;
                 const auto userver_kind = GetUserMode(effective);
-                if (userver_kind != FdPoller::Kind::kInvalid) {
-                    events_that_happened_.store(userver_kind, std::memory_order_relaxed);
-                    WakeupWaiters();
-                }
+                events_that_happened_.store(userver_kind, std::memory_order_relaxed);
+                WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {

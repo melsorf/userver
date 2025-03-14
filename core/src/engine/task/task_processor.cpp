@@ -640,6 +640,25 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 }
 
+void TaskProcessor::Execute(impl::TaskContext* context) {
+    CheckWaitTime(*context);
+
+    bool has_failed = false;
+    try {
+        impl::TaskCounter::RunningToken token{GetTaskCounter()};
+        context->DoStep();
+    } catch (const std::exception& ex) {
+        LOG_ERROR() << "uncaught exception from DoStep: " << ex;
+        has_failed = true;
+    }
+
+    pools_->GetCoroPool().AccountStackUsage();
+
+    if (has_failed || context->IsFinished()) {
+        context->FinishDetached();
+    }
+}
+
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     const int epoll_fd = per_thread_epoll_fds_[thread_index];
     const int event_fd = per_thread_event_fds_[thread_index];
@@ -663,54 +682,19 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
     while (!is_shutting_down_) {
         while (auto context_ptr = queue.PopNonBlocking()) {
-            if (!context_ptr.has_value()) {
+            if (!context_ptr) {
                 // "Stop" token
                 is_shutting_down_ = true;
                 break;
             }
-            if (!context_ptr.value()) continue;
-            
-            auto context = context_ptr.value();
-            bool has_failed = false;
-            CheckWaitTime(*context);
-
-            try {
-                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context->DoStep();
-            } catch (...) {
-                LOG_ERROR() << "unhandled exception from DoStep()";
-                has_failed = true;
-            }
-            pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
-            }
+            Execute(std::move(*context_ptr));
         }
 
         if (is_shutting_down_) break;
         
-        // Check again for tasks before going to epoll_wait
-        {
-            auto context_ptr = queue.PopNonBlocking();
-            if (context_ptr.has_value()) {
-                if (!context_ptr.value()) {
-                    // "Stop" token
-                    is_shutting_down_ = true;
-                    break;
-                }
-                
-                // Put it back and continue processing from the top
-                if (context_ptr.value()) {
-                    queue.Push(std::move(context_ptr.value()));
-                }
-                continue;
-            }
-        }
-
-        if (is_shutting_down_) break;
-
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
+
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
@@ -731,29 +715,34 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
             } else {
-                std::unique_lock<std::mutex> lock(epoll_mtx_);
-                auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end()) {
-                    auto callback = it->second;
-                    auto event_mask = events[i].events;
-                    lock.unlock();
-                    uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
-                    try {
-                        callback(filtered_events);
-                    } catch (const std::exception& ex) {
-                        LOG_ERROR() << "Exception in fd callback: " << ex;
-                    } catch (...) {
-                        LOG_ERROR() << "Unknown exception in fd callback";
+                std::function<void(uint32_t)> callback;
+                {
+                    std::lock_guard<std::mutex> lock(epoll_mtx_);
+                    auto it = fd_callbacks_.find(fd);
+                    if (it == fd_callbacks_.end()) {
+                        LOG_ERROR() << "Unknown fd in epoll: " << fd;
+                        continue;
                     }
-                    lock.lock();
+                    callback = it->second;
+                }
 
-                    // Rearm the fd
-                    struct epoll_event ev;
-                    ev.events = (filtered_events | EPOLLET);
-                    ev.data.fd = fd;
-                    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-                        LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
-                    }
+                uint32_t event_mask = events[i].events;
+                uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                try {
+                    callback(filtered_events);
+                } catch (const std::exception& ex) {
+                    LOG_ERROR() << "Exception in fd callback: " << ex;
+                } catch (...) {
+                    LOG_ERROR() << "Unknown exception in fd callback";
+                }
+                lock.lock();
+
+                // Rearm the fd
+                struct epoll_event ev;
+                ev.events = (filtered_events | EPOLLET);
+                ev.data.fd = fd;
+                if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+                    LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
                 }
             }
             if (is_shutting_down_) break;
