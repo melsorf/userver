@@ -369,6 +369,10 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     // Fallback to watcher_ if epoll registration failed or not available
     if (!epoll_registered) {
         watcher_.Set(fd, GetEvMode(kind));
+#ifdef __linux__
+        use_epoll_ = false;
+        fd_ = fd;
+#endif
     }
     state_ = State::kReadyToUse;
 }
