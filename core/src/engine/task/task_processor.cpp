@@ -760,7 +760,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
-            const auto event_mask = events[i].events;
             if (fd == event_fd) {
                 // Drain the event_fd
                 uint64_t buffer;
