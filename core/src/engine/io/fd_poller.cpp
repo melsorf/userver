@@ -207,14 +207,15 @@ void FdPoller::Impl::Invalidate() {
 #ifdef __linux__
     if (use_epoll_ && task_processor_ && registered_fd_index_ && fd_ >= 0) {
         try {
-            task_processor_->UnregisterFileDescriptor(fd_);
+            task_processor_->UnregisterFd(fd_);
         } catch (const std::exception& ex) {
-           // ignore
+           // LOG_WARNING() << "Exception while unregistering fd " << fd_ << " from epoll: " << ex;
         }
+
+        fd_ = -1;
         registered_fd_index_.reset();
         use_epoll_ = false;
         task_processor_ = nullptr;
-        fd_ = -1;
     } else {
         StopWatcher();
     }
@@ -324,20 +325,30 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this](uint32_t events) {
-                FdPoller::Kind userver_kind = FdPoller::Kind::kReadWrite;
-                if (events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP)) {
-                    if (events & EPOLLOUT) {
+                FdPoller::Kind userver_kind = FdPoller::Kind::kReadWrite; // TODO: default?
+                
+                if (events & EPOLLHUP || events & EPOLLERR) {
+                    userver_kind = FdPoller::Kind::kReadWrite;
+                } else {
+                    bool can_read = events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP);
+                    bool can_write = events & EPOLLOUT;
+                    
+                    if (can_read && can_write) {
                         userver_kind = FdPoller::Kind::kReadWrite;
-                    } else {
+                    } else if (can_read) {
                         userver_kind = FdPoller::Kind::kRead;
+                    } else if (can_write) {
+                        userver_kind = FdPoller::Kind::kWrite;
+                    } else {
+                        // Ignore unknown events
+                        return;
                     }
-                } else if (events & EPOLLOUT) {
-                    userver_kind = FdPoller::Kind::kWrite;
                 }
-                events_that_happened_.store(userver_kind, std::memory_order_relaxed);
+                
+                events_that_happened_.store(userver_kind, std::memory_order_release);
                 WakeupWaiters();
             };
-            auto reg_index = current_processor->RegisterFileDescriptor(fd, epoll_events, std::move(callback));
+            auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
             if (reg_index.has_value()) {
                 fd_ = fd;
                 registered_fd_index_ = reg_index;
@@ -353,7 +364,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     watcher_.Set(fd, GetEvMode(kind));
 #ifdef __linux__
     use_epoll_ = false;
-    fd_ = -1;
+    fd_ = fd;
 #endif
     state_ = State::kReadyToUse;
 }

@@ -83,8 +83,9 @@ public:
 #ifdef __linux__
     bool UseEvThreadPool() const { return use_ev_thread_pool_; }
 
-    std::optional<std::size_t> RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback);
-    void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+    
+    void UnregisterFd(int fd);
     
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const
@@ -119,10 +120,6 @@ private:
         noexcept;
 
 #ifdef __linux__
-    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
-
-    void UnregisterFd(int fd);
-
     void RunEventLoop(std::size_t index);
 #endif  // __linux__
 
