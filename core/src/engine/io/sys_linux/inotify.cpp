@@ -134,8 +134,8 @@ void Inotify::Initialize()
     } catch (...) {
         int fd = fd_.GetFd();
         if (fd != -1) {
+            fd_.Invalidate();
             ::close(fd);
-            fd_ = FdPoller(engine::current_task::GetEventThread());
         }
         throw;
     }
@@ -244,7 +244,7 @@ void Inotify::InitializeEpollIfNeeded() {
         }
         fd_.Reset(fd, FdPoller::Kind::kRead);
     }
-    
+
     if (!use_ev_thread_pool_ && !epoll_initialized_) {
       Initialize();
     }
