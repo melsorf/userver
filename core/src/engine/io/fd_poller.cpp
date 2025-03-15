@@ -39,14 +39,6 @@ namespace engine::io {
 
 namespace {
 
-struct CallbackState {
-    std::atomic<FdPoller::Kind> events_that_happened_{};
-    std::function<void()> wakeup_function;
-    
-    explicit CallbackState(std::function<void()> wakeup) 
-        : wakeup_function(std::move(wakeup)) {}
-};
-
 int GetEvMode(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:

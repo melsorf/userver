@@ -84,11 +84,11 @@ public:
     bool UseEvThreadPool() const { return use_ev_thread_pool_; }
 
     std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
-    
+
     void UnregisterFd(int fd);
     
     void WakeupEventLoop() const;
-    void WakeupEventLoopThread(std::size_t thread_index) const
+    void WakeupEventLoopThread(std::size_t thread_index) const;
 #endif // __linux__
 
 private:
