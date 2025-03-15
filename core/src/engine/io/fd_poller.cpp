@@ -8,6 +8,7 @@
 #include <sys/epoll.h>
 #include <engine/task/task_processor.hpp>
 #include <userver/engine/task/task.hpp>
+#include <ev.h>
 #endif
 
 template <>
