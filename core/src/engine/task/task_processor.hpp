@@ -87,6 +87,7 @@ public:
     void UnregisterFileDescriptor(int fd) { UnregisterFd(fd); }
     
     void WakeupEventLoop() const;
+    void WakeupEventLoopThread(std::size_t thread_index) const
 #endif // __linux__
 
 private:

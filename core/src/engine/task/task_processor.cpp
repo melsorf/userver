@@ -553,7 +553,17 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
         LOG_WARNING() << "RegisterFd called but per_thread_epoll_fds_ is empty";
         return std::numeric_limits<std::size_t>::max();
     }
-    std::size_t index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
+    std::size_t index;
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        auto existing_it = fd_to_thread_index_.find(fd);
+        if (existing_it != fd_to_thread_index_.end()) {
+            index = existing_it->second;
+        } else {
+            index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
+            fd_to_thread_index_[fd] = index;
+        }
+    }
 
     struct epoll_event ev;
     ev.events = events | EPOLLET;
@@ -561,19 +571,34 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
 
     {
         std::lock_guard<std::mutex> lock(epoll_mtx_);
-        if (epoll_ctl(per_thread_epoll_fds_[index], EPOLL_CTL_ADD, fd, &ev) == -1) {
-            LOG_WARNING() << "Failed to add fd " << fd << " to per-thread epoll: " 
-                << strerror(errno);
-            return std::numeric_limits<std::size_t>::max();
+        int epoll_fd = per_thread_epoll_fds_[index];
+        int op = EPOLL_CTL_ADD;
+
+        bool has_existing = fd_callbacks_.find(fd) != fd_callbacks_.end();
+        if (has_existing) {
+            op = EPOLL_CTL_MOD;
         }
+        int result = epoll_ctl(epoll_fd, op, fd, &ev);
+        if (result == -1) {
+            if (errno == EEXIST && op == EPOLL_CTL_ADD) {
+                result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            }
+            
+            if (result == -1) {
+                LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
+                    << " fd " << fd << " to per-thread epoll: " << strerror(errno);
+                
+                // Remove the fd from the map if it was not added
+                if (!has_existing) {
+                    std::lock_guard<std::mutex> idx_lock(fd_map_mtx_);
+                    fd_to_thread_index_.erase(fd);
+                }
+                return std::numeric_limits<std::size_t>::max();
+            }
+        }
+
         fd_callbacks_[fd] = std::move(callback);
     }
-
-    {
-        std::lock_guard<std::mutex> lock(fd_map_mtx_);
-        fd_to_thread_index_[fd] = index;
-    }
-
     return index;
 }
 
@@ -581,62 +606,78 @@ void TaskProcessor::UnregisterFd(int fd) {
     if (UseEvThreadPool()) return;
 
     std::size_t index;
+    bool found = false;
+
     {
         std::lock_guard<std::mutex> lock(fd_map_mtx_);
         auto it = fd_to_thread_index_.find(fd);
-        if (it == fd_to_thread_index_.end()) {
-            throw utils::TracefulException("Failed to find fd in fd_to_thread_index_ map");
+        if (it != fd_to_thread_index_.end()) {
+            index = it->second;
+            fd_to_thread_index_.erase(it);
+            found = true;
         }
-        index = it->second;
-        fd_to_thread_index_.erase(it);
+    }
+
+    if (!found) {
+        LOG_DEBUG() << "Attempt to unregister fd " << fd << " that is not in the map";
+        return;
     }
 
     if (index >= per_thread_epoll_fds_.size()) {
         LOG_ERROR() << "Invalid thread index " << index << " for fd " << fd 
             << ", max index is " << (per_thread_epoll_fds_.size() - 1);
-    } else {
-        std::lock_guard<std::mutex> lock(epoll_mtx_);
-        int epoll_fd = per_thread_epoll_fds_[index];
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-            if (errno != ENOENT) {
-                throw utils::TracefulException("Failed to remove fd from per-thread epoll");
-            }
-        }
-    }
+        return;
+    } 
+
+    bool need_wakeup = false;
 
     {
         std::lock_guard<std::mutex> lock(epoll_mtx_);
-        fd_callbacks_.erase(fd);
+        int epoll_fd = per_thread_epoll_fds_[index];
+
+        auto callback_it = fd_callbacks_.find(fd);
+        if (callback_it != fd_callbacks_.end()) {
+            fd_callbacks_.erase(callback_it);
+            need_wakeup = true;
+        }
+
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+            if (errno != ENOENT && errno != EBADF) {
+                LOG_ERROR() << "Failed to remove fd " << fd  << " from per-thread epoll: " << strerror(errno);
+            }
+        }
     }
 
-    WakeupEventLoop();
+    if (need_wakeup) {
+        WakeupEventLoopThread(index);
+    }
 }
 
-// public
-std::optional<std::size_t> TaskProcessor::RegisterFileDescriptor(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (fd < 0) {
-        return std::nullopt;
+void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
+    
+    const int event_fd = per_thread_event_fds_[thread_index];
+    if (event_fd < 0) return;
+    
+    uint64_t value = 1;
+    ssize_t ret;
+    do {
+        ret = write(event_fd, &value, sizeof(value));
+    } while (ret == -1 && errno == EINTR);
+    
+    if (ret != sizeof(value)) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            LOG_ERROR() << "Failed to write to event_fd " << event_fd 
+                << " (thread " << thread_index << "): " << strerror(errno);
+        }
     }
-    auto index = RegisterFd(fd, events, std::move(callback));
-    if (index == std::numeric_limits<std::size_t>::max()) {
-        return std::nullopt;
-    }
-    return index;
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (!UseEvThreadPool()) {
-        for (const auto event_fd : per_thread_event_fds_) {
-            if (event_fd < 0) continue;
-
-            uint64_t value = 1;
-            ssize_t ret = write(event_fd, &value, sizeof(value));
-            if (ret != sizeof(value)) {
-                if (errno != EAGAIN) {
-                    LOG_ERROR() << "Failed to write to event_fd: " << strerror(errno);
-                }
-            }
-        }
+    if (UseEvThreadPool()) return;
+    
+    for (size_t i = 0; i < per_thread_event_fds_.size(); ++i) {
+        WakeupEventLoopThread(i);
     }
 }
 
@@ -717,8 +758,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             break;
         }
 
-        for (int i = 0; i < ready; ++i) {
+        for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
+            const auto event_mask = events[i].events;
             if (fd == event_fd) {
                 // Drain the event_fd
                 uint64_t buffer;
@@ -730,35 +772,50 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
-            } else {
-                std::unique_lock<std::mutex> lock(epoll_mtx_);
-                auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end()) {
-                    auto callback = it->second;
-                    auto event_mask = events[i].events;
-                    lock.unlock();
-                    uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                continue; // Continue to next event
+            }
+            // Handle regular file descriptor events
+            std::unique_lock<std::mutex> lock(epoll_mtx_);
+            auto it = fd_callbacks_.find(fd);
+            if (it != fd_callbacks_.end()) {
+                auto callback = it->second;
+                auto event_mask = events[i].events;
+                lock.unlock();
+
+                // Include all relevant event types
+                uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                if (filtered_events) {
                     try {
-                        if (filtered_events) {
-                            callback(filtered_events);
-                        }
+                        callback(filtered_events);
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {
                         LOG_ERROR() << "Unknown exception in fd callback";
                     }
-                    lock.lock();
+                }
 
-                    // Rearm the fd
-                    struct epoll_event ev;
-                    ev.events = (filtered_events | EPOLLET);
-                    ev.data.fd = fd;
-                    if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
-                        LOG_ERROR() << "Failed to rearm fd: " << strerror(errno);
+                // Don't try to rearm if EPOLLHUP or EPOLLERR were signaled
+                // as the file descriptor may no longer be valid
+                if (!(event_mask & (EPOLLHUP | EPOLLERR))) {
+                    lock.lock();
+                    // Check if callback is still registered (could've been removed during execution)
+                    it = fd_callbacks_.find(fd);
+                    if (it != fd_callbacks_.end()) {
+                        struct epoll_event ev;
+                        ev.events = (EPOLLIN | EPOLLOUT | EPOLLET);
+                        ev.data.fd = fd;
+                        if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+                            if (errno != EBADF && errno != ENOENT) {
+                                LOG_ERROR() << "Failed to rearm fd " << fd << ": " << strerror(errno);
+                            }
+                        }
                     }
                 }
+            } else {
+                lock.unlock();
+                // File descriptor registered but no callback found
+                LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
-            if (is_shutting_down_) break;
         }
     }
 }
