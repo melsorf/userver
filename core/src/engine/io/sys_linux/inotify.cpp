@@ -86,7 +86,8 @@ Inotify::~Inotify() {
 
 void Inotify::Initialize()
 {
-    if (initialization_started_.exchange(true)) {
+    static std::atomic<bool> initialization_started{false};
+    if (initialization_started.exchange(true, std::memory_order_acquire)) {
         return;  // Avoid double initialization
     }
     try {
