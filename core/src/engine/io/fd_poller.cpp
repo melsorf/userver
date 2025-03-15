@@ -325,7 +325,13 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 FdPoller::Kind userver_kind = kind;
                 
                 if (events & (EPOLLHUP | EPOLLERR)) {
-                    userver_kind = FdPoller::Kind::kReadWrite;
+                    events_that_happened_.store(FdPoller::Kind::kReadWrite, std::memory_order_release);
+                    WakeupWaiters();
+                    return;
+                } else if (events & EPOLLRDHUP) {
+                    events_that_happened_.store(FdPoller::Kind::kRead, std::memory_order_release);
+                    WakeupWaiters();
+                    return;
                 } else {
                     bool requested_read = (kind == FdPoller::Kind::kRead || kind == FdPoller::Kind::kReadWrite);
                     bool requested_write = (kind == FdPoller::Kind::kWrite || kind == FdPoller::Kind::kReadWrite);
@@ -351,10 +357,10 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                         // No requested events
                         return;
                     }
+                    events_that_happened_.store(userver_kind, std::memory_order_release);
+                    WakeupWaiters();
+                    return;
                 }
-                
-                events_that_happened_.store(userver_kind, std::memory_order_release);
-                WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
             if (reg_index != std::numeric_limits<std::size_t>::max()) {
