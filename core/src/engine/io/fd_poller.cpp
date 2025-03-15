@@ -78,6 +78,7 @@ uint32_t KindToEpollEvents(FdPoller::Kind kind) {
         case FdPoller::Kind::kReadWrite:
             return EPOLLIN | EPOLLOUT;
     }
+    UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
 }
 #endif
 
