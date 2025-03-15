@@ -150,7 +150,7 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
         if (!kind) return {};
     }
 
-    if (fd_ == -1) {
+    if (fd_.GetFd() == -1) {
         return {};
     }
 
