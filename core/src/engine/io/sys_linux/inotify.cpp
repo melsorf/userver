@@ -64,33 +64,60 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
     use_ev_thread_pool_(engine::current_task::GetTaskProcessor().UseEvThreadPool()) 
 {
-    fd_.Reset(inotify_init(), FdPoller::Kind::kRead);
-    UASSERT(fd_.GetFd() != -1);
-
-    if (!use_ev_thread_pool_) {
-        // Set non-blocking mode
-        int flags = fcntl(fd_.GetFd(), F_GETFL, 0);
-        utils::CheckSyscall(flags, "fcntl(F_GETFL)");
-        utils::CheckSyscall(fcntl(fd_.GetFd(), F_SETFL, flags | O_NONBLOCK), "fcntl(F_SETFL)");
+    try {
+        int fd = inotify_init1(IN_NONBLOCK);
+        if (fd == -1) {
+            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
+        }
         
-        engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN | EPOLLET,
-            [this](uint32_t events) {
-                if (events & EPOLLIN) {
-                    Dispatch();
+        fd_.Reset(fd, FdPoller::Kind::kRead);
+
+        if (!use_ev_thread_pool_) {
+            // Create weak_ptr for safe use in callback
+            auto weak_self = std::weak_ptr<Inotify>(shared_from_this());
+
+            const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN | EPOLLET,
+                [weak_self](uint32_t events) {
+                    if (auto self = weak_self.lock()) {
+                        if (events & EPOLLERR || events & EPOLLHUP) {
+                            // LOG_ERROR() << "Inotify fd got error event: " << events;
+                            return;
+                        }
+                        
+                        if (events & EPOLLIN) {
+                            self->Dispatch();
+                        }
+                    }
                 }
+            );
+            
+            if (!epoll_registered) {
+                throw std::runtime_error("Failed to register inotify fd with epoll");
             }
-        );
+        }
+    } catch (...) {
+        int fd = fd_.GetFd();
+        if (fd != -1) {
+            ::close(fd);
+        }
+        throw;
     }
 }
 
 Inotify::~Inotify() {
-    if (!engine::current_task::GetTaskProcessor().UseEvThreadPool()) {
-        engine::current_task::GetTaskProcessor().UnregisterFileDescriptor(fd_.GetFd());
+    if (!use_ev_thread_pool_) {
+        try {
+            engine::current_task::GetTaskProcessor().UnregisterFd(fd_.GetFd());
+        } catch (const std::exception& ex) {
+            // LOG_ERROR() << "Error while unregistering inotify fd from epoll: " << ex;
+        }
     }
     
-    auto fd = fd_.GetFd();
+    int fd = fd_.GetFd();
     if (fd != -1) {
-        close(fd);
+        if (::close(fd) == -1) {
+            // LOG_WARNING() << "Failed to close inotify fd: " << strerror(errno);
+        }
     }
 }
 
@@ -122,6 +149,11 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
         auto kind = fd_.Wait(deadline);
         if (!kind) return {};
     }
+
+    if (fd_ == -1) {
+        return {};
+    }
+
     // In EPOLLET don't wait - immediately process whatever is present
     Dispatch();
 
@@ -135,35 +167,49 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
 
 void Inotify::Dispatch() {
     char buff[sizeof(inotify_event) + NAME_MAX + 1];
+    const bool is_epoll_mode = !use_ev_thread_pool_;
 
-    auto process_buffer = [this, &buff](ssize_t len) {
-        for (ssize_t pos = 0; pos < len;) {
-            // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
-            auto* event = reinterpret_cast<inotify_event*>(buff + pos);
-            pos += sizeof(inotify_event) + event->len;
-            std::string path =
-                event->len ? (wd_to_path_[event->wd] + '/' + std::string{event->name}) : wd_to_path_[event->wd];
-            pending_events_.push(Event{std::move(path), EventTypeMask(static_cast<EventType>(event->mask))});
-        }
-    };
-
-    // For ev thread pool mode, do a single read; for epoll, read until no more events
-    const bool repeat = !use_ev_thread_pool_;
-
+    // For epoll mode read all events up to EAGAIN
+    // For ev_thread_pool mode - one read
     while (true) {
-        auto len = read(fd_.GetFd(), buff, sizeof(buff));
+        ssize_t len;
+
+        do {
+            len = read(fd_.GetFd(), buff, sizeof(buff));
+        } while (len == -1 && errno == EINTR);
+
         if (len < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // No more data available (non-blocking mode)
+                // No more data available
                 break;
             }
             utils::CheckSyscall(len, "read");
         } else if (len == 0) {
             // EOF case
+            // LOG_WARNING() << "inotify read returned 0 bytes (EOF)";
             break;
         }
-        process_buffer(len);
-        if (!repeat) break;
+        const auto* event = reinterpret_cast<const inotify_event*>(buff);
+        for (ssize_t pos = 0; pos < len;) {
+            event = reinterpret_cast<const inotify_event*>(buff + pos);
+            
+            if (pos + sizeof(inotify_event) + event->len > static_cast<size_t>(len)) {
+                break;  // Incomplete inotify event data received
+            }
+            
+            pos += sizeof(inotify_event) + event->len;
+            
+            try {
+                std::string path = event->len ? (wd_to_path_.at(event->wd) + '/' + std::string{event->name})
+                    : wd_to_path_.at(event->wd);
+                
+                pending_events_.push(Event{std::move(path), EventTypeMask(static_cast<EventType>(event->mask))});
+            } catch (const std::out_of_range&) {
+                // pass
+            }
+        }
+        
+        if (!is_epoll_mode) break;
     }
 }
 
