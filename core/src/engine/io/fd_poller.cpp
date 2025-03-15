@@ -205,10 +205,12 @@ void FdPoller::Impl::Invalidate() {
            // LOG_WARNING() << "Exception while unregistering fd " << fd_ << " from epoll: " << ex;
         }
 
-        fd_ = -1;
-        registered_fd_index_.reset();
+        if (registered_fd_index_) {
+            registered_fd_index_.reset();
+        }
         use_epoll_ = false;
         task_processor_ = nullptr;
+        fd_ = -1;
     } else {
         StopWatcher();
     }
