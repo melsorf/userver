@@ -63,8 +63,7 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 
 Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
     use_ev_thread_pool_(engine::current_task::GetTaskProcessor().UseEvThreadPool()),
-    epoll_initialized_(false),
-    initialization_started_(false)
+    epoll_initialized_(false)
 {}
 
 Inotify::~Inotify() {
