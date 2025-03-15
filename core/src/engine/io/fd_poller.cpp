@@ -324,7 +324,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this](uint32_t events) {
-                FdPoller::Kind userver_kind = 0;
+                FdPoller::Kind userver_kind = FdPoller::Kind::kReadWrite;
                 if (events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP)) {
                     if (events & EPOLLOUT) {
                         userver_kind = FdPoller::Kind::kReadWrite;
