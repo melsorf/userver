@@ -73,6 +73,11 @@ FdPoller::Kind GetUserMode(int ev_events) {
     if (ev_events & EV_WRITE) {
         return FdPoller::Kind::kWrite;
     }
+#ifdef __linux__
+    if (ev_events & (EV_ERROR | EV_HUP)) {
+        return FdPoller::Kind::kReadWrite;
+    }
+#endif
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
 
