@@ -72,11 +72,11 @@ FdPoller::Kind GetUserMode(int ev_events) {
 uint32_t KindToEpollEvents(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:
-            return EPOLLIN | EPOLLPRI;
+            return EPOLLIN | EPOLLPRI | EPOLLRDHUP | EPOLLET;
         case FdPoller::Kind::kWrite:
-            return EPOLLOUT;
+            return EPOLLOUT | EPOLLET;
         case FdPoller::Kind::kReadWrite:
-            return EPOLLIN | EPOLLOUT;
+            return EPOLLIN | EPOLLOUT | EPOLLPRI | EPOLLRDHUP | EPOLLET;
     }
     UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
 }
@@ -312,15 +312,17 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     UINVARIANT(fd >= 0, "FdPoller::Reset: fd is -1");
     UASSERT(!IsValid());
 
+    bool epoll_registered = false;
 #ifdef __linux__
     if (register_epollet) {
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this](uint32_t events) {
+                // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = FdPoller::Kind::kReadWrite; // TODO: default?
                 
-                if (events & EPOLLHUP || events & EPOLLERR) {
+                if (events & (EPOLLHUP | EPOLLERR)) {
                     userver_kind = FdPoller::Kind::kReadWrite;
                 } else {
                     bool can_read = events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP);
@@ -333,7 +335,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     } else if (can_write) {
                         userver_kind = FdPoller::Kind::kWrite;
                     } else {
-                        // Ignore unknown events
+                        // It shouldn't happen, but if it does, ignore it
                         return;
                     }
                 }
@@ -342,21 +344,21 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
-            fd_ = fd;
-            registered_fd_index_ = reg_index;
-            use_epoll_ = true;
-            task_processor_ = current_processor;
-            state_ = State::kReadyToUse;
-            return;
+            if (reg_index != std::numeric_limits<std::size_t>::max()) {
+                fd_ = fd;
+                registered_fd_index_ = reg_index;
+                use_epoll_ = true;
+                task_processor_ = current_processor;
+                epoll_registered = true;
+            } 
+            // else: failed to register fd, will fallback to watcher_
         }
     }
 #endif
-    // Fallback to watcher_
-    watcher_.Set(fd, GetEvMode(kind));
-#ifdef __linux__
-    use_epoll_ = false;
-    fd_ = fd;
-#endif
+    // Fallback to watcher_ if epoll registration failed or not available
+    if (!epoll_registered) {
+        watcher_.Set(fd, GetEvMode(kind));
+    }
     state_ = State::kReadyToUse;
 }
 
