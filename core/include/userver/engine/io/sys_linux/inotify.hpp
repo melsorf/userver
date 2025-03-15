@@ -60,7 +60,7 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 
 /// @brief File descriptor that allows one to monitor filesystem events, such as
 /// file creation, modification, etc.
-class Inotify : public std::enable_shared_from_this<Inotify> final {
+class Inotify final : public std::enable_shared_from_this<Inotify> {
 public:
     Inotify();
 
