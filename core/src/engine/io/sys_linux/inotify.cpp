@@ -85,48 +85,57 @@ Inotify::~Inotify() {
 
 void Inotify::Initialize()
 {
-    static std::atomic<bool> initialization_started{false};
-    if (initialization_started.exchange(true, std::memory_order_acquire)) {
-        return;  // Avoid double initialization
-    }
     try {
-        int fd = inotify_init1(IN_NONBLOCK);
-        if (fd == -1) {
-            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
-        }
-        
-        fd_.Reset(fd, FdPoller::Kind::kRead);
-        
-        if (!use_ev_thread_pool_) {
-            auto weak_self = std::weak_ptr<Inotify>(
-                std::static_pointer_cast<Inotify>(shared_from_this()));
-
-            const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
-                fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
-                [weak_self](uint32_t events) {
-                    if (auto self = weak_self.lock()) {
-                        if (events & EPOLLERR || events & EPOLLHUP) {
-                            LOG_ERROR() << "Inotify fd got error event: " << events;
-                            return;
-                        }
-                        
-                        if (events & EPOLLIN) {
-                            self->Dispatch();
-                        }
-                    }
-                }
-            );
-            
-            if (!epoll_registered) {
-                throw std::runtime_error("Failed to register inotify fd with epoll");
+        // Create the inotify file descriptor if it doesn't exist yet
+        if (fd_.GetFd() == -1) {
+            int fd = inotify_init1(IN_NONBLOCK);
+            if (fd == -1) {
+                throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
             }
             
-            epoll_initialized_ = true;
+            fd_.Reset(fd, FdPoller::Kind::kRead);
+        }
+        
+        if (!use_ev_thread_pool_ && fd_.GetFd() != -1 && !epoll_initialized_) {
+            try {
+                std::weak_ptr<Inotify> weak_self;
+                try {
+                    weak_self = std::weak_ptr<Inotify>(
+                        std::static_pointer_cast<Inotify>(shared_from_this()));
+                } catch (const std::bad_weak_ptr& ex) {
+                    // If we're not in a shared_ptr, just use polling without epoll
+                    return;
+                }
+
+                const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
+                    fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
+                    [weak_self](uint32_t events) {
+                        if (auto self = weak_self.lock()) {
+                            if (events & EPOLLERR || events & EPOLLHUP) {
+                                return;
+                            }
+                            
+                            if (events & EPOLLIN) {
+                                self->Dispatch();
+                            }
+                        }
+                    }
+                );
+                
+                if (!epoll_registered) {
+                    throw std::runtime_error("Failed to register inotify fd with epoll");
+                }
+                
+                epoll_initialized_ = true;
+            } catch (const std::bad_weak_ptr&) {
+                // Fall back to polling mode
+            }
         }
     } catch (...) {
         int fd = fd_.GetFd();
         if (fd != -1) {
             ::close(fd);
+            fd_ = FdPoller(engine::current_task::GetEventThread());
         }
         throw;
     }
@@ -228,6 +237,14 @@ void Inotify::Dispatch() {
 }
 
 void Inotify::InitializeEpollIfNeeded() {
+    if (fd_.GetFd() == -1) {
+        int fd = inotify_init1(IN_NONBLOCK);
+        if (fd == -1) {
+            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
+        }
+        fd_.Reset(fd, FdPoller::Kind::kRead);
+    }
+    
     if (!use_ev_thread_pool_ && !epoll_initialized_) {
       Initialize();
     }
