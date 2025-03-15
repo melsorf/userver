@@ -164,7 +164,7 @@ FdPoller::Impl::~Impl() {
     if (use_epoll_ && fd_ >= 0) {
         try {
             if (task_processor_ && registered_fd_index_) {
-                task_processor_->UnregisterFileDescriptor(fd_);
+                task_processor_->UnregisterFd(fd_);
             }
         } catch (...) {
             // Destructors shouldn't throw
@@ -341,14 +341,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
-            if (reg_index.has_value()) {
-                fd_ = fd;
-                registered_fd_index_ = reg_index;
-                use_epoll_ = true;
-                task_processor_ = current_processor;
-                state_ = State::kReadyToUse;
-                return;
-            }
+            fd_ = fd;
+            registered_fd_index_ = reg_index;
+            use_epoll_ = true;
+            task_processor_ = current_processor;
+            state_ = State::kReadyToUse;
+            return;
         }
     }
 #endif
