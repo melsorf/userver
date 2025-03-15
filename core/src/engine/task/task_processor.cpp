@@ -739,7 +739,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                     lock.unlock();
                     uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                     try {
-                        callback(filtered_events);
+                        if (filtered_events) {
+                            callback(filtered_events);
+                        }
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {

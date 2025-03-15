@@ -8,7 +8,6 @@
 #include <sys/epoll.h>
 #include <engine/task/task_processor.hpp>
 #include <userver/engine/task/task.hpp>
-#include <ev.h>
 #endif
 
 template <>
@@ -75,9 +74,7 @@ FdPoller::Kind GetUserMode(int ev_events) {
         return FdPoller::Kind::kWrite;
     }
 #ifdef __linux__
-    if (ev_events & (EV_ERROR | EV_HUP)) {
-        return FdPoller::Kind::kReadWrite;
-    }
+    return FdPoller::Kind::kNone;
 #endif
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
@@ -86,13 +83,13 @@ FdPoller::Kind GetUserMode(int ev_events) {
 uint32_t KindToEpollEvents(FdPoller::Kind kind) {
     switch (kind) {
         case FdPoller::Kind::kRead:
-            return EPOLLIN;
+            return EPOLLIN | EPOLLPRI;
         case FdPoller::Kind::kWrite:
             return EPOLLOUT;
         case FdPoller::Kind::kReadWrite:
             return EPOLLIN | EPOLLOUT;
-        default:
-            UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
+        case FdPoller::Kind::kNone:
+            return 0;
     }
 }
 #endif
