@@ -73,9 +73,6 @@ FdPoller::Kind GetUserMode(int ev_events) {
     if (ev_events & EV_WRITE) {
         return FdPoller::Kind::kWrite;
     }
-#ifdef __linux__
-    return FdPoller::Kind::kRead;
-#endif
     UINVARIANT(false, "Failed to recognize events that happened on the socket.");
 }
 
