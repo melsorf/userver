@@ -76,7 +76,7 @@ Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
             // Create weak_ptr for safe use in callback
             auto weak_self = std::weak_ptr<Inotify>(shared_from_this());
 
-            const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFileDescriptor(fd_.GetFd(), EPOLLIN | EPOLLET,
+            const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(fd_.GetFd(), EPOLLIN | EPOLLET,
                 [weak_self](uint32_t events) {
                     if (auto self = weak_self.lock()) {
                         if (events & EPOLLERR || events & EPOLLHUP) {
