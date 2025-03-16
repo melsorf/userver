@@ -124,7 +124,7 @@ void Inotify::InitializeEpollIfNeeded()
     const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
         fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
         [this](uint32_t events) {
-            EpollCallback(this, events);
+            ::EpollCallback(this, events);
         }
     );
     
