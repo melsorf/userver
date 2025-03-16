@@ -143,10 +143,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     task_counter_(config.worker_threads),
     config_(std::move(config)),
     pools_(std::move(pools))
-#ifdef __linux__
-    , is_working_(config_.worker_threads),
-    is_spinning_(config_.worker_threads)
-#endif // __linux__
 {
     utils::impl::FinishStaticRegistration();
 
@@ -248,31 +244,17 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     }
     if (is_shutting_down_) {
         context->RequestCancel(TaskCancellationReason::kShutdown);
+#ifdef __linux__
+        if (!UseEvThreadPool()) WakeupEventLoop();
+#endif  // __linux__
     }
     SetTaskQueueWaitTimepoint(context);
-
-#ifdef __linux__
-    std::optional<std::size_t> best_thread;
-    if (!UseEvThreadPool()) {
-        // Pick the best thread BEFORE enqueuing the task
-        best_thread = PickBestWorkerThread();
-    }
-#endif  // __linux__
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 
 #ifdef __linux__
     if (!UseEvThreadPool()) {
-        std::size_t thread_index;
-
-        if (best_thread.has_value()) {
-            thread_index = *best_thread;
-        } else {
-            // All threads are busy, pick a random one
-            thread_index = utils::RandRange(config_.worker_threads);
-        }
-
-        WakeupEventLoopThread(thread_index);
+        WakeupBestThread();
     }
 #endif  // __linux__
 }
@@ -701,30 +683,24 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 }
 
-std::optional<std::size_t> TaskProcessor::PickBestWorkerThread() {
-    std::size_t best_index = std::numeric_limits<std::size_t>::max();
-    bool best_is_spinning = false;
-
-    for (std::size_t i = 0; i < is_working_.size(); ++i) {
-        if (!is_working_[i].load(std::memory_order_relaxed)) {
-            // Found an idle thread
-            return i;
-        } else if (is_spinning_[i].load(std::memory_order_relaxed) && !best_is_spinning) {
-            // Found a spinning thread, prefer it over working thread
-            best_index = i;
-            best_is_spinning = true;
-        } else if (best_index == std::numeric_limits<std::size_t>::max()) {
-            // No idle or spinning thread found yet, remember the first working thread
-            best_index = i;
+void TaskProcessor::WakeupBestThread() const {
+    if (per_thread_event_fds_.empty()) return;
+  
+    // Find the best thread to wake up
+    size_t best_thread = 0;
+    bool found_idle = false;
+  
+    for (size_t i = 0; i < thread_status_.size(); ++i) {
+        if (!thread_status_[i].load(std::memory_order_relaxed)) {
+            // Found idle thread, use it
+            best_thread = i;
+            found_idle = true;
+            break;
         }
     }
-
-    if (best_index != std::numeric_limits<std::size_t>::max()) {
-        return best_index;
-    }
-
-    // All threads are busy
-    return std::nullopt;
+  
+    // If no idle thread found, use first thread as default
+    WakeupEventLoopThread(best_thread);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -749,61 +725,56 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        bool has_tasks = queue.GetSizeApproximate() > 0;
-
-        if (!has_tasks) {
-            // Spinning before epoll_wait
-            is_spinning_[thread_index].store(true, std::memory_order_relaxed);
-            for (std::size_t i = 0; i < config_.event_loop_spinning_iterations && !is_shutting_down_; ++i) {
-                if (queue.GetSizeApproximate() > 0) {
-                    has_tasks = true;
-                    break;
-                }
-                std::this_thread::yield();
+        // Set thread status to working
+        thread_status_[thread_index].store(true, std::memory_order_relaxed);
+        while (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr.has_value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
             }
-            is_spinning_[thread_index].store(false, std::memory_order_relaxed);
-        }
+            if (!context_ptr.value()) continue;
+            
+            auto context = context_ptr.value();
+            bool has_failed = false;
+            CheckWaitTime(*context);
 
-        if (has_tasks || queue.GetSizeApproximate() > 0) {
-            is_working_[thread_index].store(true, std::memory_order_relaxed);
-            while (auto context_ptr = queue.PopNonBlocking()) {
-                if (!context_ptr.has_value()) {
+            try {
+                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                context->DoStep();
+            } catch (...) {
+                LOG_ERROR() << "unhandled exception from DoStep()";
+                has_failed = true;
+            }
+            pools_->GetCoroPool().AccountStackUsage();
+            if (has_failed || context->IsFinished()) {
+                context->FinishDetached();
+            }
+        }
+        // Set thread status to idle
+        thread_status_[thread_index].store(false, std::memory_order_relaxed);
+
+        if (is_shutting_down_) break;
+        
+        // Check again for tasks before going to epoll_wait
+        {
+            auto context_ptr = queue.PopNonBlocking();
+            if (context_ptr.has_value()) {
+                if (!context_ptr.value()) {
                     // "Stop" token
                     is_shutting_down_ = true;
                     break;
                 }
-                if (!context_ptr.value()) continue;
                 
-                auto context = context_ptr.value();
-                bool has_failed = false;
-                CheckWaitTime(*context);
-
-                try {
-                    impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                    context->DoStep();
-                } catch (...) {
-                    LOG_ERROR() << "unhandled exception from DoStep()";
-                    has_failed = true;
+                // Put it back and continue processing from the top
+                if (context_ptr.value()) {
+                    queue.Push(std::move(context_ptr.value()));
                 }
-                pools_->GetCoroPool().AccountStackUsage();
-                if (has_failed || context->IsFinished()) {
-                    context->FinishDetached();
-                }
-                is_working_[thread_index].store(false, std::memory_order_relaxed);
-            }
-            is_working_[thread_index].store(false, std::memory_order_release);
-
-            // If we exited the processing loop and there was no stop-token, but tasks appeared again, 
-            // return to the beginning of the outer loop to check again
-            if (!is_shutting_down_ && queue.GetSizeApproximate() > 0) {
                 continue;
             }
         }
 
         if (is_shutting_down_) break;
-
-        // Always set is_working_=false before epoll_wait
-        is_working_[thread_index].store(false, std::memory_order_release);
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
@@ -813,15 +784,8 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             break;
         }
 
-        if (queue.GetSizeApproximate() > 0) {
-            // If there are tasks, immediately return to the beginning of the cycle
-            continue;
-        }
-
-        is_working_[thread_index].store(true, std::memory_order_release);
-
+        thread_status_[thread_index].store(true, std::memory_order_relaxed);
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
-            is_working_[thread_index].store(true, std::memory_order_relaxed);
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
                 // Drain the event_fd
@@ -879,7 +843,8 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
         }
-        is_working_[thread_index].store(false, std::memory_order_relaxed);
+        // Set thread status to idle
+        thread_status_[thread_index].store(false, std::memory_order_relaxed);
     }
 }
 #endif  // __linux__
