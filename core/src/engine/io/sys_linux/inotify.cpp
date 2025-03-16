@@ -86,7 +86,7 @@ Inotify::~Inotify() {
 void Inotify::Initialize()
 {
     try {
-        // Create the inotify file descriptor if it doesn't exist yet
+        // Create the fd if it doesn't exist yet
         if (fd_.GetFd() == -1) {
             int fd = inotify_init1(IN_NONBLOCK);
             if (fd == -1) {
@@ -212,9 +212,9 @@ void Inotify::Dispatch() {
             // LOG_WARNING() << "inotify read returned 0 bytes (EOF)";
             break;
         }
-        const auto* event = reinterpret_cast<const inotify_event*>(buff);
+
         for (ssize_t pos = 0; pos < len;) {
-            event = reinterpret_cast<const inotify_event*>(buff + pos);
+            const auto* event = reinterpret_cast<const inotify_event*>(buff + pos);
             
             if (pos + sizeof(inotify_event) + event->len > static_cast<size_t>(len)) {
                 break;  // Incomplete inotify event data received
@@ -246,7 +246,16 @@ void Inotify::InitializeEpollIfNeeded() {
     }
 
     if (!use_ev_thread_pool_ && !epoll_initialized_) {
-      Initialize();
+        try {
+            Initialize();
+        } catch (const std::bad_weak_ptr&) {
+            // LOG_WARNING() << "Cannot initialize epoll in Inotify::InitializeEpollIfNeeded: " << ex.what();
+
+            // Continue with non-epoll mode
+        } catch (const std::exception&) {
+            // LOG_ERROR() << "Error initializing epoll in Inotify: " << ex.what();
+            throw;
+        }
     }
 }
 
