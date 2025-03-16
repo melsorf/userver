@@ -144,7 +144,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     config_(std::move(config)),
     pools_(std::move(pools))
 #ifdef __linux__
-    , thread_status_(config.worker_threads)
+    , is_thread_working_(config.worker_threads)
 #endif
 {
     utils::impl::FinishStaticRegistration();
@@ -691,16 +691,22 @@ void TaskProcessor::WakeupBestThread() const {
   
     // Find the best thread to wake up
     size_t best_thread = 0;
+    bool found_idle = false;
+    size_t worker_threads = config_.worker_threads;
   
-    for (size_t i = 0; i < thread_status_.size(); ++i) {
-        if (!thread_status_[i].load(std::memory_order_relaxed)) {
+    for (size_t i = 0; i < is_thread_working_.size(); ++i) {
+        if (!is_thread_working_[i].load(std::memory_order_relaxed)) {
             // Found idle thread, use it
             best_thread = i;
+            found_idle = true;
             break;
         }
     }
   
-    // If no idle thread found, use first thread as default
+    if (!found_idle) {
+        // Wake up a random thread if no idle thread is found
+        best_thread = utils::RandRange(worker_threads);
+    }
     WakeupEventLoopThread(best_thread);
 }
 
@@ -727,7 +733,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
     while (!is_shutting_down_) {
         // Set thread status to working
-        thread_status_[thread_index].store(true, std::memory_order_relaxed);
+        is_thread_working_[thread_index].store(true, std::memory_order_relaxed);
         while (auto context_ptr = queue.PopNonBlocking()) {
             if (!context_ptr.has_value()) {
                 // "Stop" token
@@ -753,7 +759,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
         }
         // Set thread status to idle
-        thread_status_[thread_index].store(false, std::memory_order_relaxed);
+        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
 
         if (is_shutting_down_) break;
         
@@ -777,6 +783,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
+        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
         if (ready < 0) {
@@ -785,7 +792,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             break;
         }
 
-        thread_status_[thread_index].store(true, std::memory_order_relaxed);
+        is_thread_working_[thread_index].store(true, std::memory_order_relaxed);
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
@@ -845,7 +852,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
         }
         // Set thread status to idle
-        thread_status_[thread_index].store(false, std::memory_order_relaxed);
+        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
     }
 }
 #endif  // __linux__
