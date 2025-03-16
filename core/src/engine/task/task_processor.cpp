@@ -749,71 +749,61 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        // Spinning before epoll_wait
-        is_spinning_[thread_index].store(true, std::memory_order_relaxed);
-        for (std::size_t i = 0; i < config_.event_loop_spinning_iterations; ++i) {
-            if (is_shutting_down_) break;
-            if (queue.GetSizeApproximate() > 0 || !fd_callbacks_.empty()) {
-                break;
-            }
-            std::this_thread::yield();
-        }
-        is_spinning_[thread_index].store(false, std::memory_order_relaxed);
+        bool has_tasks = queue.GetSizeApproximate() > 0;
 
-        while (auto context_ptr = queue.PopNonBlocking()) {
+        if (!has_tasks) {
+            // Spinning before epoll_wait
+            is_spinning_[thread_index].store(true, std::memory_order_relaxed);
+            for (std::size_t i = 0; i < config_.event_loop_spinning_iterations && !is_shutting_down_; ++i) {
+                if (queue.GetSizeApproximate() > 0) {
+                    has_tasks = true;
+                    break;
+                }
+                std::this_thread::yield();
+            }
+            is_spinning_[thread_index].store(false, std::memory_order_relaxed);
+        }
+
+        if (has_tasks || queue.GetSizeApproximate() > 0) {
             is_working_[thread_index].store(true, std::memory_order_relaxed);
-            if (!context_ptr.has_value()) {
-                // "Stop" token
-                is_shutting_down_ = true;
-                break;
-            }
-            if (!context_ptr.value()) continue;
-            
-            auto context = context_ptr.value();
-            bool has_failed = false;
-            CheckWaitTime(*context);
-
-            try {
-                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context->DoStep();
-            } catch (...) {
-                LOG_ERROR() << "unhandled exception from DoStep()";
-                has_failed = true;
-            }
-            pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
-            }
-            is_working_[thread_index].store(false, std::memory_order_relaxed);
-        }
-
-        if (is_shutting_down_) break;
-        
-        // Check again for tasks before going to epoll_wait
-        {
-            auto context_ptr = queue.PopNonBlocking();
-            if (context_ptr.has_value()) {
-                if (!context_ptr.value()) {
+            while (auto context_ptr = queue.PopNonBlocking()) {
+                if (!context_ptr.has_value()) {
                     // "Stop" token
                     is_shutting_down_ = true;
                     break;
                 }
+                if (!context_ptr.value()) continue;
                 
-                // Put it back and continue processing from the top
-                if (context_ptr.value()) {
-                    queue.Push(std::move(context_ptr.value()));
+                auto context = context_ptr.value();
+                bool has_failed = false;
+                CheckWaitTime(*context);
+
+                try {
+                    impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                    context->DoStep();
+                } catch (...) {
+                    LOG_ERROR() << "unhandled exception from DoStep()";
+                    has_failed = true;
                 }
+                pools_->GetCoroPool().AccountStackUsage();
+                if (has_failed || context->IsFinished()) {
+                    context->FinishDetached();
+                }
+                is_working_[thread_index].store(false, std::memory_order_relaxed);
+            }
+            is_working_[thread_index].store(false, std::memory_order_release);
+
+            // If we exited the processing loop and there was no stop-token, but tasks appeared again, 
+            // return to the beginning of the outer loop to check again
+            if (!is_shutting_down_ && queue.GetSizeApproximate() > 0) {
                 continue;
             }
         }
 
         if (is_shutting_down_) break;
 
-        // Before calling epoll_wait, check if there are any tasks or file descriptor callbacks
-        // If not, set is_working_[thread_index] to false to indicate that the thread is idle
-        if (queue.GetSizeApproximate() == 0 && fd_callbacks_.empty()) {
-            is_working_[thread_index].store(false, std::memory_order_relaxed);
-        }
+        // Always set is_working_=false before epoll_wait
+        is_working_[thread_index].store(false, std::memory_order_release);
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
@@ -822,6 +812,13 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             break;
         }
+
+        if (queue.GetSizeApproximate() > 0) {
+            // If there are tasks, immediately return to the beginning of the cycle
+            continue;
+        }
+
+        is_working_[thread_index].store(true, std::memory_order_release);
 
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             is_working_[thread_index].store(true, std::memory_order_relaxed);
