@@ -32,6 +32,7 @@ struct TaskProcessorConfig {
     std::string thread_name;
     OsScheduling os_scheduling{OsScheduling::kNormal};
     int spinning_iterations{1000};
+    std::size_t event_loop_spinning_iterations{1000};
     TaskQueueType task_processor_queue{TaskQueueType::kGlobalTaskQueue};
 
     std::size_t task_trace_every{1000};

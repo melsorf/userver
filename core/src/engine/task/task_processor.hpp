@@ -89,6 +89,8 @@ public:
     
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const;
+
+    std::optional<std::size_t> PickBestWorkerThread();
 #endif // __linux__
 
 private:
@@ -121,6 +123,11 @@ private:
 
 #ifdef __linux__
     void RunEventLoop(std::size_t index);
+
+    std::optional<std::size_t> PickBestWorkerThread();
+
+    void SetWorking(std::size_t index) { is_working_[index].store(true, std::memory_order_relaxed); }
+    void SetIdle(std::size_t index) { is_working_[index].store(false, std::memory_order_relaxed); }
 #endif  // __linux__
 
     concurrent::impl::InterferenceShield<impl::DetachedTasksSyncBlock> detached_contexts_{
@@ -153,6 +160,8 @@ private:
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
     std::vector<int> per_thread_epoll_fds_;
     std::vector<int> per_thread_event_fds_;
+    std::vector<std::atomic<bool>> is_working_;
+    std::vector<std::atomic<bool>> is_spinning_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
 #endif  // __linux__
