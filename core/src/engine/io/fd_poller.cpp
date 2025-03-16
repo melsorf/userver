@@ -321,29 +321,21 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto callback = [this, kind](uint32_t events) {
+            auto callback = [this](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
-                FdPoller::Kind userver_kind = kind;
-
+                FdPoller::Kind triggered = FdPoller::Kind::kRead;
                 if (events & (EPOLLHUP | EPOLLERR)) {
-                    events_that_happened_.store(FdPoller::Kind::kReadWrite, std::memory_order_release);
-                    WakeupWaiters();
-                    return;
+                    triggered = FdPoller::Kind::kReadWrite;
                 } else if (events & EPOLLRDHUP) {
-                    events_that_happened_.store(FdPoller::Kind::kRead, std::memory_order_release);
-                    WakeupWaiters();
+                    triggered = FdPoller::Kind::kRead;
+                } else if (events & EPOLLIN) {
+                    triggered = FdPoller::Kind::kRead;
+                } else if (events & EPOLLOUT) {
+                    triggered = FdPoller::Kind::kWrite;
+                } else {
                     return;
                 }
-                else if (events & EPOLLIN) {
-                    userver_kind = FdPoller::Kind::kRead;
-                } else if (events & EPOLLOUT) {
-                    userver_kind = FdPoller::Kind::kWrite;
-                }
-                 else {
-                    return; // No requested events
-                }
-
-                events_that_happened_.store(userver_kind, std::memory_order_release);
+                events_that_happened_.store(triggered, std::memory_order_release);
                 WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
@@ -353,7 +345,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 use_epoll_ = true;
                 task_processor_ = current_processor;
                 epoll_registered = true;
-            }
+            } 
             // else: failed to register fd, will fallback to watcher_
         }
     }
