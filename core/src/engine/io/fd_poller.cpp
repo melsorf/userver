@@ -267,13 +267,10 @@ int FdPoller::GetFd() const noexcept {
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
-    const auto wakeup_source = pimpl_->DoWait(deadline);
-
-    if (engine::current_task::IsCancelRequested()) {
-        return std::nullopt;
-    }
-    
-    if (wakeup_source == engine::impl::TaskContext::WakeupSource::kWaitList) {
+    if (pimpl_->DoWait(deadline) == engine::impl::TaskContext::WakeupSource::kWaitList) {
+        if (engine::current_task::IsCancelRequested()) {
+            return std::nullopt;
+        }
         return pimpl_->events_that_happened_.load(std::memory_order_relaxed);
     } else {
         return std::nullopt;
