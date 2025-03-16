@@ -809,7 +809,11 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
-        is_working_[thread_index].store(false, std::memory_order_relaxed);
+        // Before calling epoll_wait, check if there are any tasks or file descriptor callbacks
+        // If not, set is_working_[thread_index] to false to indicate that the thread is idle
+        if (queue.GetSizeApproximate() == 0 && fd_callbacks_.empty()) {
+            is_working_[thread_index].store(false, std::memory_order_relaxed);
+        }
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
