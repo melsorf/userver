@@ -321,7 +321,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto callback = [this, kind, fd](uint32_t events) {
+            auto callback = [this, kind](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
 
