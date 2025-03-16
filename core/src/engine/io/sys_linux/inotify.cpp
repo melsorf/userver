@@ -57,7 +57,7 @@ std::string ToString(EventType type) {
 namespace {
 
     // Static callback
-    void EpollCallback(int fd, void* user_data, uint32_t events) {
+    void EpollCallback(void* user_data, uint32_t events) {
         auto* inotify = static_cast<Inotify*>(user_data);
         if (!inotify) return;
         
@@ -124,7 +124,7 @@ void Inotify::InitializeEpollIfNeeded()
     const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
         fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
         [this](uint32_t events) {
-            EpollCallback(fd_.GetFd(), this, events);
+            EpollCallback(this, events);
         }
     );
     

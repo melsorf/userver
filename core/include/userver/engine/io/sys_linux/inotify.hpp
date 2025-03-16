@@ -90,6 +90,8 @@ private:
     void Dispatch();
     void InitializeEpollIfNeeded();
 
+    friend void EpollCallback(void*, uint32_t);
+
     FdPoller fd_;
     bool use_ev_thread_pool_;
     bool epoll_initialized_{false};
