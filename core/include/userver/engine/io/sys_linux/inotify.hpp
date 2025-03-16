@@ -56,7 +56,7 @@ struct Event {
     bool operator==(const Event& other) const { return path == other.path && mask == other.mask; }
 };
 
-logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept; 
+logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept;
 
 /// @brief File descriptor that allows one to monitor filesystem events, such as
 /// file creation, modification, etc.

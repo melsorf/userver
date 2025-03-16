@@ -84,15 +84,15 @@ Inotify::~Inotify() {
     if (!use_ev_thread_pool_ && epoll_initialized_) {
         try {
             static std::mutex registry_mutex;
-            static std::unordered_map<int, Inotify*> fd_to_inotify;
+            static std::unordered_map<int, std::weak_ptr<Inotify>> fd_to_inotify;
             
             const int fd = fd_.GetFd();
             if (fd != -1) {
                 std::lock_guard<std::mutex> lock(registry_mutex);
                 fd_to_inotify.erase(fd);
+                
+                engine::current_task::GetTaskProcessor().UnregisterFd(fd);
             }
-            
-            engine::current_task::GetTaskProcessor().UnregisterFd(fd);
         } catch (const std::exception& ex) {
             // LOG_ERROR() << "Error while unregistering inotify fd from epoll: " << ex.what();
         }
@@ -106,70 +106,70 @@ Inotify::~Inotify() {
     }
 }
 
-void Inotify::InitializeEpollIfNeeded() {
+void Inotify::InitializeEpollIfNeeded()
+{
     if (epoll_initialized_ || use_ev_thread_pool_) {
         return;
     }
-    
     static std::mutex registry_mutex;
-    static std::unordered_map<int, Inotify*> fd_to_inotify;
-
+    static std::unordered_map<int, std::weak_ptr<Inotify>> fd_to_inotify;
+    
     const int fd = fd_.GetFd();
     if (fd == -1) {
         return;
     }
-    
-    {
-        std::lock_guard<std::mutex> lock(registry_mutex);
-        fd_to_inotify[fd] = this;
-    }
-    
-    const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
-        fd, EPOLLIN | EPOLLET | EPOLLRDHUP,
-        [fd](uint32_t events) {
-            Inotify* self = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(registry_mutex);
-                auto it = fd_to_inotify.find(fd);
-                if (it != fd_to_inotify.end()) {
-                    self = it->second;
-                }
-            }
-            
-            if (self) {
-                if (events & EPOLLERR || events & EPOLLHUP) {
-                    // LOG_ERROR() << "Inotify fd got error event: " << events;
-                    return;
+
+    // Try to create a weak_ptr to self - if this fails with bad_weak_ptr,
+    // just skip epoll registration and use polling mode
+    try {
+        auto weak_self = std::weak_ptr<Inotify>(shared_from_this());
+        
+        {
+            std::lock_guard<std::mutex> lock(registry_mutex);
+            fd_to_inotify[fd] = weak_self;
+        }
+        
+        const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
+            fd, EPOLLIN | EPOLLET | EPOLLRDHUP,
+            [fd](uint32_t events) {
+                std::shared_ptr<Inotify> self;
+                {
+                    std::lock_guard<std::mutex> lock(registry_mutex);
+                    auto it = fd_to_inotify.find(fd);
+                    if (it != fd_to_inotify.end()) {
+                        self = it->second.lock();
+                    }
                 }
                 
-                if (events & EPOLLIN) {
-                    self->Dispatch();
+                if (self) {
+                    // Object still exists, safe to call
+                    if (events & EPOLLERR || events & EPOLLHUP) {
+                        LOG_ERROR() << "Inotify fd got error event: " << events;
+                        return;
+                    }
+                    
+                    if (events & EPOLLIN) {
+                        self->Dispatch();
+                    }
                 }
             }
+        );
+
+        if (!epoll_registered) {
+            std::lock_guard<std::mutex> lock(registry_mutex);
+            fd_to_inotify.erase(fd);
+            throw std::runtime_error("Failed to register inotify fd with epoll");
         }
-    );
-    
-    if (!epoll_registered) {
-        std::lock_guard<std::mutex> lock(registry_mutex);
-        fd_to_inotify.erase(fd);
-        throw std::runtime_error("Failed to register inotify fd with epoll");
+        
+        epoll_initialized_ = true;
     }
-    
-    epoll_initialized_ = true;
+    catch (const std::bad_weak_ptr&) {
+        // LOG_WARNING() << "Inotify not managed by shared_ptr, using polling mode";
+    }
 }
 
 void Inotify::AddWatch(const std::string& path, EventTypeMask flags) {
-    // Create a valid descriptor if not yet initialized
-    if (fd_.GetFd() == -1) {
-        int fd = inotify_init1(IN_NONBLOCK);
-        if (fd == -1) {
-            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
-        }
-        fd_.Reset(fd, FdPoller::Kind::kRead);
-    }
-    
     InitializeEpollIfNeeded();
-
     auto wd = utils::CheckSyscall(
         inotify_add_watch(fd_.GetFd(), path.c_str(), static_cast<int>(flags.GetValue())), "inotify_add_watch"
     );
@@ -179,9 +179,7 @@ void Inotify::AddWatch(const std::string& path, EventTypeMask flags) {
 }
 
 void Inotify::RmWatch(const std::string& path) {
-    if (fd_.GetFd() == -1) {
-        throw std::runtime_error("Cannot remove watch: invalid file descriptor");
-    }
+    InitializeEpollIfNeeded();
     auto wd = path_to_wd_.at(path);
     path_to_wd_.erase(path);
     wd_to_path_.erase(wd);
@@ -190,18 +188,12 @@ void Inotify::RmWatch(const std::string& path) {
 }
 
 std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
+    InitializeEpollIfNeeded();
     if (!pending_events_.empty()) {
         auto front = pending_events_.front();
         pending_events_.pop();
         return front;
     }
-
-    if (fd_.GetFd() == -1) {
-        return {};
-    }
-
-    // Initialize epoll if not already done
-    InitializeEpollIfNeeded();
 
     if (use_ev_thread_pool_) {
         auto kind = fd_.Wait(deadline);
@@ -215,6 +207,11 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
     // In EPOLLET don't wait - immediately process whatever is present
     Dispatch();
 
+    if (!pending_events_.empty()) {
+        auto front = pending_events_.front();
+        pending_events_.pop();
+        return front;
+    }
     return {};
 }
 
@@ -242,9 +239,9 @@ void Inotify::Dispatch() {
             // LOG_WARNING() << "inotify read returned 0 bytes (EOF)";
             break;
         }
-        
+        const auto* event = reinterpret_cast<const inotify_event*>(buff);
         for (ssize_t pos = 0; pos < len;) {
-            const auto* event = reinterpret_cast<const inotify_event*>(buff + pos);
+            event = reinterpret_cast<const inotify_event*>(buff + pos);
             
             if (pos + sizeof(inotify_event) + event->len > static_cast<size_t>(len)) {
                 break;  // Incomplete inotify event data received
