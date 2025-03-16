@@ -321,21 +321,40 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto callback = [this](uint32_t events) {
+            auto callback = [this, kind](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
-                FdPoller::Kind triggered = FdPoller::Kind::kRead;
+                FdPoller::Kind userver_kind = kind;
+                
                 if (events & (EPOLLHUP | EPOLLERR)) {
-                    triggered = FdPoller::Kind::kReadWrite;
-                } else if (events & EPOLLRDHUP) {
-                    triggered = FdPoller::Kind::kRead;
-                } else if (events & EPOLLIN) {
-                    triggered = FdPoller::Kind::kRead;
-                } else if (events & EPOLLOUT) {
-                    triggered = FdPoller::Kind::kWrite;
+                    userver_kind = FdPoller::Kind::kReadWrite;
                 } else {
-                    return;
+                    bool requested_read = (kind == FdPoller::Kind::kRead || kind == FdPoller::Kind::kReadWrite);
+                    bool requested_write = (kind == FdPoller::Kind::kWrite || kind == FdPoller::Kind::kReadWrite);
+                    
+                    bool can_read = events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP);
+                    bool can_write = events & EPOLLOUT;
+                    
+                    if (requested_read && requested_write) {
+                        if (can_read && can_write) {
+                            userver_kind = FdPoller::Kind::kReadWrite;
+                        } else if (can_read) {
+                            userver_kind = FdPoller::Kind::kRead;
+                        } else if (can_write) {
+                            userver_kind = FdPoller::Kind::kWrite;
+                        } else {
+                            return; // No requested events
+                        }
+                    } else if (requested_read && can_read) {
+                        userver_kind = FdPoller::Kind::kRead;
+                    } else if (requested_write && can_write) {
+                        userver_kind = FdPoller::Kind::kWrite;
+                    } else {
+                        // No requested events
+                        return;
+                    }
                 }
-                events_that_happened_.store(triggered, std::memory_order_release);
+                
+                events_that_happened_.store(userver_kind, std::memory_order_release);
                 WakeupWaiters();
             };
             auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
