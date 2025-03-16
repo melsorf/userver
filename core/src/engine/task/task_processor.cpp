@@ -144,10 +144,16 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     config_(std::move(config)),
     pools_(std::move(pools))
 #ifdef __linux__
-    , is_thread_working_(config.worker_threads, {false})
+    , is_thread_working_(config.worker_threads)
 #endif
 {
     utils::impl::FinishStaticRegistration();
+
+#ifdef __linux__
+    for (auto &flag : is_thread_working_) {
+        flag.store(false, std::memory_order_relaxed);
+    }
+#endif
 
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
@@ -689,24 +695,12 @@ void TaskProcessor::WakeupEventLoop() const {
 void TaskProcessor::WakeupBestThread() const {
     if (per_thread_event_fds_.empty()) return;
   
-    // Find the best thread to wake up
-    size_t best_thread = 0;
-    bool found_idle = false;
-    
-    for (size_t i = 0; i < is_thread_working_.size(); ++i) {
+    for (size_t i = 0; i < config_.worker_threads; ++i) {
         if (!is_thread_working_[i].load(std::memory_order_relaxed)) {
-            // Found idle thread, use it
-            best_thread = i;
-            found_idle = true;
-            break;
+            WakeupEventLoopThread(i);
+            return;
         }
     }
-  
-    if (!found_idle) {
-        // Wake up a random thread if no idle thread is found
-        best_thread = utils::RandRange(config_.worker_threads);
-    }
-    WakeupEventLoopThread(best_thread);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
