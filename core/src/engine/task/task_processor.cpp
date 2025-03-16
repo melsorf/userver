@@ -809,11 +809,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
-        // Before calling epoll_wait, check if there are any tasks or file descriptor callbacks
-        // If not, set is_working_[thread_index] to false to indicate that the thread is idle
-        if (queue.GetSizeApproximate() == 0 && fd_callbacks_.empty()) {
-            is_working_[thread_index].store(false, std::memory_order_relaxed);
-        }
+        is_working_[thread_index].store(false, std::memory_order_relaxed);
 
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (is_shutting_down_) break;
@@ -824,6 +820,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
+            is_working_[thread_index].store(true, std::memory_order_relaxed);
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
                 // Drain the event_fd
@@ -881,6 +878,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
         }
+        is_working_[thread_index].store(false, std::memory_order_relaxed);
     }
 }
 #endif  // __linux__
