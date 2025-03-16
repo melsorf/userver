@@ -143,6 +143,9 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     task_counter_(config.worker_threads),
     config_(std::move(config)),
     pools_(std::move(pools))
+#ifdef __linux__
+    , thread_status_(config.worker_threads)
+#endif
 {
     utils::impl::FinishStaticRegistration();
 
