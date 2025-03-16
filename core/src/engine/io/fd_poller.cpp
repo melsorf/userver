@@ -319,6 +319,11 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this, kind](uint32_t events) {
+                // Check for cancellation before processing events
+                if (engine::current_task::IsCancelRequested()) {
+                    return; // Task was cancelled, don't process events
+                }
+
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
                 
