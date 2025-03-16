@@ -54,6 +54,24 @@ std::string ToString(EventType type) {
     return fmt::format("unknown {}", static_cast<int>(type));
 }
 
+namespace {
+
+    // Static callback
+    void EpollCallback(int fd, void* user_data, uint32_t events) {
+        auto* inotify = static_cast<Inotify*>(user_data);
+        if (!inotify) return;
+        
+        if (events & EPOLLERR || events & EPOLLHUP) {
+            return;
+        }
+        
+        if (events & EPOLLIN) {
+            inotify->Dispatch();
+        }
+    }
+    
+}  // namespace
+
 std::string ToString(EventTypeMask mask) { return ToString(static_cast<EventType>(mask.GetValue())); }
 
 logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept {
@@ -62,9 +80,23 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 }
 
 Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
-    use_ev_thread_pool_(engine::current_task::GetTaskProcessor().UseEvThreadPool()),
-    epoll_initialized_(false)
-{}
+    use_ev_thread_pool_(engine::current_task::GetTaskProcessor().UseEvThreadPool()) 
+{
+    try {
+        int fd = inotify_init1(IN_NONBLOCK);
+        if (fd == -1) {
+            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
+        }
+        
+        fd_.Reset(fd, FdPoller::Kind::kRead);
+    } catch (...) {
+        int fd = fd_.GetFd();
+        if (fd != -1) {
+            ::close(fd);
+        }
+        throw;
+    }
+}
 
 Inotify::~Inotify() {
     if (!use_ev_thread_pool_ && epoll_initialized_) {
@@ -83,66 +115,38 @@ Inotify::~Inotify() {
     }
 }
 
-void Inotify::Initialize()
+void Inotify::InitializeEpollIfNeeded()
 {
-    try {
-        // Create the fd if it doesn't exist yet
-        if (fd_.GetFd() == -1) {
-            int fd = inotify_init1(IN_NONBLOCK);
-            if (fd == -1) {
-                throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
-            }
-            
-            fd_.Reset(fd, FdPoller::Kind::kRead);
-        }
-        
-        if (!use_ev_thread_pool_ && fd_.GetFd() != -1 && !epoll_initialized_) {
-            try {
-                std::weak_ptr<Inotify> weak_self;
-                try {
-                    weak_self = std::weak_ptr<Inotify>(
-                        std::static_pointer_cast<Inotify>(shared_from_this()));
-                } catch (const std::bad_weak_ptr& ex) {
-                    // If we're not in a shared_ptr, just use polling without epoll
-                    return;
-                }
-
-                const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
-                    fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
-                    [weak_self](uint32_t events) {
-                        if (auto self = weak_self.lock()) {
-                            if (events & EPOLLERR || events & EPOLLHUP) {
-                                return;
-                            }
-                            
-                            if (events & EPOLLIN) {
-                                self->Dispatch();
-                            }
-                        }
-                    }
-                );
-                
-                if (!epoll_registered) {
-                    throw std::runtime_error("Failed to register inotify fd with epoll");
-                }
-                
-                epoll_initialized_ = true;
-            } catch (const std::bad_weak_ptr&) {
-                // Fall back to polling mode
-            }
-        }
-    } catch (...) {
-        int fd = fd_.GetFd();
-        if (fd != -1) {
-            fd_.Invalidate();
-            ::close(fd);
-        }
-        throw;
+    if (epoll_initialized_ || use_ev_thread_pool_) {
+        return;
     }
+
+    const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
+        fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
+        [this](uint32_t events) {
+            EpollCallback(fd_.GetFd(), this, events);
+        }
+    );
+    
+    if (!epoll_registered) {
+        throw std::runtime_error("Failed to register inotify fd with epoll");
+    }
+    
+    epoll_initialized_ = true;
 }
 
 void Inotify::AddWatch(const std::string& path, EventTypeMask flags) {
+    // Create a valid descriptor if not yet initialized
+    if (fd_.GetFd() == -1) {
+        int fd = inotify_init1(IN_NONBLOCK);
+        if (fd == -1) {
+            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
+        }
+        fd_.Reset(fd, FdPoller::Kind::kRead);
+    }
+    
     InitializeEpollIfNeeded();
+
     auto wd = utils::CheckSyscall(
         inotify_add_watch(fd_.GetFd(), path.c_str(), static_cast<int>(flags.GetValue())), "inotify_add_watch"
     );
@@ -152,7 +156,9 @@ void Inotify::AddWatch(const std::string& path, EventTypeMask flags) {
 }
 
 void Inotify::RmWatch(const std::string& path) {
-    InitializeEpollIfNeeded();
+    if (fd_.GetFd() == -1) {
+        throw std::runtime_error("Cannot remove watch: invalid file descriptor");
+    }
     auto wd = path_to_wd_.at(path);
     path_to_wd_.erase(path);
     wd_to_path_.erase(wd);
@@ -161,12 +167,18 @@ void Inotify::RmWatch(const std::string& path) {
 }
 
 std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
-    InitializeEpollIfNeeded();
     if (!pending_events_.empty()) {
         auto front = pending_events_.front();
         pending_events_.pop();
         return front;
     }
+
+    if (fd_.GetFd() == -1) {
+        return {};
+    }
+
+    // Initialize epoll if not already done
+    InitializeEpollIfNeeded();
 
     if (use_ev_thread_pool_) {
         auto kind = fd_.Wait(deadline);
@@ -180,11 +192,6 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
     // In EPOLLET don't wait - immediately process whatever is present
     Dispatch();
 
-    if (!pending_events_.empty()) {
-        auto front = pending_events_.front();
-        pending_events_.pop();
-        return front;
-    }
     return {};
 }
 
@@ -212,7 +219,7 @@ void Inotify::Dispatch() {
             // LOG_WARNING() << "inotify read returned 0 bytes (EOF)";
             break;
         }
-
+        
         for (ssize_t pos = 0; pos < len;) {
             const auto* event = reinterpret_cast<const inotify_event*>(buff + pos);
             
@@ -233,29 +240,6 @@ void Inotify::Dispatch() {
         }
         
         if (!is_epoll_mode) break;
-    }
-}
-
-void Inotify::InitializeEpollIfNeeded() {
-    if (fd_.GetFd() == -1) {
-        int fd = inotify_init1(IN_NONBLOCK);
-        if (fd == -1) {
-            throw std::system_error(errno, std::generic_category(), "inotify_init1 failed");
-        }
-        fd_.Reset(fd, FdPoller::Kind::kRead);
-    }
-
-    if (!use_ev_thread_pool_ && !epoll_initialized_) {
-        try {
-            Initialize();
-        } catch (const std::bad_weak_ptr&) {
-            // LOG_WARNING() << "Cannot initialize epoll in Inotify::InitializeEpollIfNeeded: " << ex.what();
-
-            // Continue with non-epoll mode
-        } catch (const std::exception&) {
-            // LOG_ERROR() << "Error initializing epoll in Inotify: " << ex.what();
-            throw;
-        }
     }
 }
 

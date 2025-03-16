@@ -86,8 +86,6 @@ public:
     /// or the coroutine is cancelled.
     std::optional<Event> Poll(engine::Deadline deadline);
 
-    void Initialize();
-
 private:
     void Dispatch();
     void InitializeEpollIfNeeded();
