@@ -144,7 +144,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     config_(std::move(config)),
     pools_(std::move(pools))
 #ifdef __linux__
-    , is_thread_working_(config.worker_threads)
+    , is_thread_working_(config.worker_threads, {false})
 #endif
 {
     utils::impl::FinishStaticRegistration();
@@ -692,8 +692,7 @@ void TaskProcessor::WakeupBestThread() const {
     // Find the best thread to wake up
     size_t best_thread = 0;
     bool found_idle = false;
-    size_t worker_threads = config_.worker_threads;
-  
+    
     for (size_t i = 0; i < is_thread_working_.size(); ++i) {
         if (!is_thread_working_[i].load(std::memory_order_relaxed)) {
             // Found idle thread, use it
@@ -705,7 +704,7 @@ void TaskProcessor::WakeupBestThread() const {
   
     if (!found_idle) {
         // Wake up a random thread if no idle thread is found
-        best_thread = utils::RandRange(worker_threads);
+        best_thread = utils::RandRange(config_.worker_threads);
     }
     WakeupEventLoopThread(best_thread);
 }
