@@ -701,6 +701,8 @@ void TaskProcessor::WakeupBestThread() const {
             return;
         }
     }
+
+    WakeupEventLoopThread(utils::RandRange(config_.worker_threads));
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -810,7 +812,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 lock.unlock();
 
                 // Include all relevant event types
-                uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP);
+                uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (filtered_events) {
                     try {
                         callback(filtered_events);
