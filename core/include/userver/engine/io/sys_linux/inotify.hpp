@@ -56,11 +56,7 @@ struct Event {
     bool operator==(const Event& other) const { return path == other.path && mask == other.mask; }
 };
 
-logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept;
-
-namespace {
-    void EpollCallback(void* user_data, uint32_t events);
-}  // namespace    
+logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept; 
 
 /// @brief File descriptor that allows one to monitor filesystem events, such as
 /// file creation, modification, etc.
@@ -94,8 +90,6 @@ private:
     void Dispatch();
     void InitializeEpollIfNeeded();
 
-    friend void (::USERVER_NAMESPACE::engine::io::sys_linux::EpollCallback)(void*, uint32_t);
-    
     FdPoller fd_;
     bool use_ev_thread_pool_;
     bool epoll_initialized_{false};

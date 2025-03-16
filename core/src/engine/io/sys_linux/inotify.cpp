@@ -54,24 +54,6 @@ std::string ToString(EventType type) {
     return fmt::format("unknown {}", static_cast<int>(type));
 }
 
-namespace {
-
-    // Static callback
-    void EpollCallback(void* user_data, uint32_t events) {
-        auto* inotify = static_cast<Inotify*>(user_data);
-        if (!inotify) return;
-        
-        if (events & EPOLLERR || events & EPOLLHUP) {
-            return;
-        }
-        
-        if (events & EPOLLIN) {
-            inotify->Dispatch();
-        }
-    }
-    
-}  // namespace
-
 std::string ToString(EventTypeMask mask) { return ToString(static_cast<EventType>(mask.GetValue())); }
 
 logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexcept {
@@ -101,9 +83,18 @@ Inotify::Inotify() : fd_(engine::current_task::GetEventThread()),
 Inotify::~Inotify() {
     if (!use_ev_thread_pool_ && epoll_initialized_) {
         try {
-            engine::current_task::GetTaskProcessor().UnregisterFd(fd_.GetFd());
+            static std::mutex registry_mutex;
+            static std::unordered_map<int, Inotify*> fd_to_inotify;
+            
+            const int fd = fd_.GetFd();
+            if (fd != -1) {
+                std::lock_guard<std::mutex> lock(registry_mutex);
+                fd_to_inotify.erase(fd);
+            }
+            
+            engine::current_task::GetTaskProcessor().UnregisterFd(fd);
         } catch (const std::exception& ex) {
-            // LOG_ERROR() << "Error while unregistering inotify fd from epoll: " << ex;
+            // LOG_ERROR() << "Error while unregistering inotify fd from epoll: " << ex.what();
         }
     }
     
@@ -115,20 +106,52 @@ Inotify::~Inotify() {
     }
 }
 
-void Inotify::InitializeEpollIfNeeded()
-{
+void Inotify::InitializeEpollIfNeeded() {
     if (epoll_initialized_ || use_ev_thread_pool_) {
         return;
     }
+    
+    static std::mutex registry_mutex;
+    static std::unordered_map<int, Inotify*> fd_to_inotify;
 
+    const int fd = fd_.GetFd();
+    if (fd == -1) {
+        return;
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex);
+        fd_to_inotify[fd] = this;
+    }
+    
     const bool epoll_registered = engine::current_task::GetTaskProcessor().RegisterFd(
-        fd_.GetFd(), EPOLLIN | EPOLLET | EPOLLRDHUP,
-        [this](uint32_t events) {
-            ::EpollCallback(this, events);
+        fd, EPOLLIN | EPOLLET | EPOLLRDHUP,
+        [fd](uint32_t events) {
+            Inotify* self = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(registry_mutex);
+                auto it = fd_to_inotify.find(fd);
+                if (it != fd_to_inotify.end()) {
+                    self = it->second;
+                }
+            }
+            
+            if (self) {
+                if (events & EPOLLERR || events & EPOLLHUP) {
+                    // LOG_ERROR() << "Inotify fd got error event: " << events;
+                    return;
+                }
+                
+                if (events & EPOLLIN) {
+                    self->Dispatch();
+                }
+            }
         }
     );
     
     if (!epoll_registered) {
+        std::lock_guard<std::mutex> lock(registry_mutex);
+        fd_to_inotify.erase(fd);
         throw std::runtime_error("Failed to register inotify fd with epoll");
     }
     
