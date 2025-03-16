@@ -688,13 +688,11 @@ void TaskProcessor::WakeupBestThread() const {
   
     // Find the best thread to wake up
     size_t best_thread = 0;
-    bool found_idle = false;
   
     for (size_t i = 0; i < thread_status_.size(); ++i) {
         if (!thread_status_[i].load(std::memory_order_relaxed)) {
             // Found idle thread, use it
             best_thread = i;
-            found_idle = true;
             break;
         }
     }
