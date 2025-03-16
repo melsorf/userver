@@ -699,7 +699,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
-    constexpr std::size_t kMaxEvents{128};
+    constexpr std::size_t kMaxEvents{512};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
