@@ -89,8 +89,6 @@ public:
     
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const;
-
-    std::optional<std::size_t> PickBestWorkerThread();
 #endif // __linux__
 
 private:
