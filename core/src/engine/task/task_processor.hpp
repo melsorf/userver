@@ -156,8 +156,8 @@ private:
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
 
-    std::vector<std::atomic<bool>> thread_sleeping_;
-    std::atomic<size_t> next_thread_to_wake_{0};
+    std::unique_ptr<std::atomic<bool>[]> thread_sleeping_;
+    mutable std::atomic<size_t> next_thread_to_wake_{0};
 #endif  // __linux__
 };
 

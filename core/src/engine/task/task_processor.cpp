@@ -161,9 +161,9 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (auto& event_fd : per_thread_event_fds_) {
                 event_fd = CreateEventFd();
             }
-            thread_sleeping_.resize(config_.worker_threads);
-            for (auto& sleeping : thread_sleeping_) {
-                sleeping.store(false);
+            thread_sleeping_ = std::make_unique<std::atomic<bool>[]>(config_.worker_threads);
+            for (size_t i = 0; i < config_.worker_threads; ++i) {
+                thread_sleeping_[i].store(false, std::memory_order_relaxed);
             }
         }
 #endif  // __linux__
