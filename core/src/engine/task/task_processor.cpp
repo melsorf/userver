@@ -701,9 +701,9 @@ void TaskProcessor::WakeupEventLoop() const {
         WakeupEventLoopThread(thread_to_wake);
     }
 
-    // If the task queue is not empty, wake up a different thread
-    if (GetTaskQueueSize() > 0) {
-        WakeupEventLoop();
+    for (int i = 0; i < GetTaskQueueSize(); ++i) {
+        const auto next_thread_to_wake = (thread_to_wake + 1) % thread_count;
+        WakeupEventLoopThread(next_thread_to_wake);
     }
 }
 
