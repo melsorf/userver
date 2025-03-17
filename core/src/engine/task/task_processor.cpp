@@ -702,7 +702,7 @@ void TaskProcessor::WakeupEventLoop() const {
     }
 
     for (int i = 0; i < GetTaskQueueSize(); ++i) {
-        const auto next_thread_to_wake = (thread_to_wake + 1) % thread_count;
+        const auto next_thread_to_wake = (thread_to_wake + i + 1) % thread_count;
         WakeupEventLoopThread(next_thread_to_wake);
     }
 }
