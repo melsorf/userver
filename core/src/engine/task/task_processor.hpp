@@ -156,6 +156,7 @@ private:
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
     mutable std::vector<std::chrono::steady_clock::time_point> epoll_wait_start_times_;
+    mutable std::atomic<std::size_t> next_thread_to_wake_{0};
 #endif  // __linux__
 };
 
