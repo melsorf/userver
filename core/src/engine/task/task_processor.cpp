@@ -684,7 +684,7 @@ void TaskProcessor::WakeupEventLoop() const {
     if (threads_count > 0) {
         // First check a few random threads - it's faster than checking everything
         constexpr int kMaxRandomChecks = 4;
-        for (int i = 0; i < kMaxRandomChecks && i < threads_count; ++i) {
+        for (std::size_t i = 0; i < kMaxRandomChecks && i < threads_count; ++i) {
             std::size_t idx = utils::RandRange(threads_count);
             if (thread_is_sleeping_[idx].load(std::memory_order_relaxed)) {
                 WakeupEventLoopThread(idx);
