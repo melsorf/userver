@@ -89,9 +89,6 @@ public:
     
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const;
-    std::size_t GetNextThreadToWake() const;
-
-    void ProcessTasksNonBlocking() noexcept;
 #endif // __linux__
 
 private:
@@ -158,8 +155,9 @@ private:
     std::vector<int> per_thread_event_fds_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
-    mutable std::vector<std::chrono::steady_clock::time_point> epoll_wait_start_times_;
-    mutable std::atomic<std::size_t> next_thread_to_wake_{0};
+
+    static constexpr size_t kEventFdShards = 32;
+    std::array<std::atomic<std::size_t>, kEventFdShards> next_wakeup_thread_index_per_shard_{};
 #endif  // __linux__
 };
 

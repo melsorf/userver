@@ -155,7 +155,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             per_thread_event_fds_.resize(config_.worker_threads, -1);
-            epoll_wait_start_times_.resize(config_.worker_threads, std::chrono::steady_clock::time_point::max());
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
             }
@@ -654,10 +653,8 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
 }
 
-
 void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
-    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size() || 
-        thread_index >= epoll_wait_start_times_.size()) return;
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
     
     const int event_fd = per_thread_event_fds_[thread_index];
     if (event_fd < 0) return;
@@ -674,31 +671,14 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
                 << " (thread " << thread_index << "): " << strerror(errno);
         }
     }
-    epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::time_point::max(); 
 }
 
 void TaskProcessor::WakeupEventLoop() const {
     if (UseEvThreadPool()) return;
     
-    if (per_thread_event_fds_.empty()) return;
-    
-    const auto thread_count = per_thread_event_fds_.size();
-    if (thread_count == 0) return;
-    
-    WakeupEventLoopThread(GetNextThreadToWake());
-}
-
-std::size_t TaskProcessor::GetNextThreadToWake() const {
-    // First try to find a thread that's in epoll_wait
-    const auto earliest_thread_index = std::distance(
-        epoll_wait_start_times_.begin(),
-        std::min_element(epoll_wait_start_times_.begin(), epoll_wait_start_times_.end()));
-    if (epoll_wait_start_times_[earliest_thread_index] != std::chrono::steady_clock::time_point::max()) {
-        return earliest_thread_index;
-    }
-
-    // If no thread is in epoll_wait, use round-robin
-    return next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
+    const auto shard_index = utils::RandRange(next_wakeup_thread_index_per_shard_.size());
+    const auto index = next_wakeup_thread_index_per_shard_[shard_index].fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
+    WakeupEventLoopThread(index);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -718,19 +698,60 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         return;
     }
 
+    auto& queue = std::get<TaskQueue>(task_queue_);
     constexpr std::size_t kMaxEvents{256};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        ProcessTasksNonBlocking();
+        while (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr.has_value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
+            }
+            if (!context_ptr.value()) continue;
+            
+            auto context = context_ptr.value();
+            bool has_failed = false;
+            CheckWaitTime(*context);
+
+            try {
+                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                context->DoStep();
+            } catch (...) {
+                LOG_ERROR() << "unhandled exception from DoStep()";
+                has_failed = true;
+            }
+            pools_->GetCoroPool().AccountStackUsage();
+            if (has_failed || context->IsFinished()) {
+                context->FinishDetached();
+            }
+        }
+
+        if (is_shutting_down_) break;
+        
+        // Check again for tasks before going to epoll_wait
+        {
+            auto context_ptr = queue.PopNonBlocking();
+            if (context_ptr.has_value()) {
+                if (!context_ptr.value()) {
+                    // "Stop" token
+                    is_shutting_down_ = true;
+                    break;
+                }
+                
+                // Put it back and continue processing from the top
+                if (context_ptr.value()) {
+                    queue.Push(std::move(context_ptr.value()));
+                }
+                continue;
+            }
+        }
+
         if (is_shutting_down_) break;
 
-        epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::now();
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::time_point::max();
-
         if (is_shutting_down_) break;
-
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
@@ -752,9 +773,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 }
                 continue; // Continue to next event
             }
-
-            ProcessTasksNonBlocking();
-
             // Handle regular file descriptor events
             std::unique_lock<std::mutex> lock(epoll_mtx_);
             auto it = fd_callbacks_.find(fd);
@@ -797,40 +815,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 // File descriptor registered but no callback found
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
-
-            ProcessTasksNonBlocking();
         }
-    }
-}
-
-void TaskProcessor::ProcessTasksNonBlocking() noexcept {
-    
-    auto context = std::visit([](auto&& arg) -> impl::TaskContext* {
-        if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, TaskQueue>) {
-            auto task = arg.PopNonBlocking();
-            if (task) {
-                return task->get();
-            }
-        }
-        return nullptr;
-    }, task_queue_);
-    if (!context) return;
-
-    CheckWaitTime(*context);
-
-    bool has_failed = false;
-    try {
-        impl::TaskCounter::RunningToken token{GetTaskCounter()};
-        context->DoStep();
-    } catch (const std::exception& ex) {
-        LOG_ERROR() << "uncaught exception from DoStep: " << ex;
-        has_failed = true;
-    }
-
-    pools_->GetCoroPool().AccountStackUsage();
-
-    if (has_failed || context->IsFinished()) {
-        context->FinishDetached();
     }
 }
 #endif  // __linux__
