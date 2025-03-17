@@ -685,12 +685,7 @@ void TaskProcessor::WakeupEventLoop() const {
     const auto thread_count = per_thread_event_fds_.size();
     if (thread_count == 0) return;
     
-    const auto queue_size = GetTaskQueueSize();
-    const auto threads_to_wake = queue_size > 0 ? thread_count : 1;
-
-    for (std::size_t i = 0; i < threads_to_wake; ++i) {
-        WakeupEventLoopThread(GetNextThreadToWake());
-    }
+    WakeupEventLoopThread(GetNextThreadToWake());
 }
 
 std::size_t TaskProcessor::GetNextThreadToWake() const {
