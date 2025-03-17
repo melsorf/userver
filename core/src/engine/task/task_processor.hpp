@@ -90,6 +90,8 @@ public:
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const;
     std::size_t GetNextThreadToWake() const;
+
+    void ProcessTasksNonBlocking() noexcept;
 #endif // __linux__
 
 private:

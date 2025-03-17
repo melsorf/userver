@@ -654,6 +654,7 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
 }
 
+
 void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
     if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size() || 
         thread_index >= epoll_wait_start_times_.size()) return;
@@ -727,57 +728,15 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        while (auto context_ptr = queue.PopNonBlocking()) {
-            if (!context_ptr.has_value()) {
-                // "Stop" token
-                is_shutting_down_ = true;
-                break;
-            }
-            if (!context_ptr.value()) continue;
-            
-            auto context = context_ptr.value();
-            bool has_failed = false;
-            CheckWaitTime(*context);
-
-            try {
-                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-                context->DoStep();
-            } catch (...) {
-                LOG_ERROR() << "unhandled exception from DoStep()";
-                has_failed = true;
-            }
-            pools_->GetCoroPool().AccountStackUsage();
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
-            }
-        }
-
-        if (is_shutting_down_) break;
-        
-        // Check again for tasks before going to epoll_wait
-        {
-            auto context_ptr = queue.PopNonBlocking();
-            if (context_ptr.has_value()) {
-                if (!context_ptr.value()) {
-                    // "Stop" token
-                    is_shutting_down_ = true;
-                    break;
-                }
-                
-                // Put it back and continue processing from the top
-                if (context_ptr.value()) {
-                    queue.Push(std::move(context_ptr.value()));
-                }
-                continue;
-            }
-        }
-
+        ProcessTasksNonBlocking();
         if (is_shutting_down_) break;
 
         epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::now();
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::time_point::max();
+
         if (is_shutting_down_) break;
+
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
@@ -799,6 +758,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 }
                 continue; // Continue to next event
             }
+
+            ProcessTasksNonBlocking();
+
             // Handle regular file descriptor events
             std::unique_lock<std::mutex> lock(epoll_mtx_);
             auto it = fd_callbacks_.find(fd);
@@ -841,7 +803,31 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 // File descriptor registered but no callback found
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
+
+            ProcessTasksNonBlocking();
         }
+    }
+}
+
+void TaskProcessor::ProcessTasksNonBlocking() noexcept {
+    auto context = std::visit([](auto&& arg) { return arg.PopNonBlocking(); }, task_queue_);
+    if (!context) return;
+
+    CheckWaitTime(*context);
+
+    bool has_failed = false;
+    try {
+        impl::TaskCounter::RunningToken token{GetTaskCounter()};
+        context->DoStep();
+    } catch (const std::exception& ex) {
+        LOG_ERROR() << "uncaught exception from DoStep: " << ex;
+        has_failed = true;
+    }
+
+    pools_->GetCoroPool().AccountStackUsage();
+
+    if (has_failed || context->IsFinished()) {
+        context->FinishDetached();
     }
 }
 #endif  // __linux__
