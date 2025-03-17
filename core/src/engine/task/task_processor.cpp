@@ -782,13 +782,11 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (thread_index < thread_is_sleeping_.size()) {
             thread_is_sleeping_[thread_index].store(true, std::memory_order_relaxed);
         }
-
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         if (thread_index < thread_is_sleeping_.size()) {
             thread_is_sleeping_[thread_index].store(false, std::memory_order_relaxed);
         }
         if (is_shutting_down_) break;
-        if (CheckAndProcessTasks(queue)) continue;
 
         if (ready < 0) {
             if (errno == EINTR) continue;
