@@ -682,6 +682,14 @@ void TaskProcessor::WakeupEventLoop() {
     
     size_t thread_count = config_.worker_threads;
     if (thread_count == 0) return;
+
+    // In shutdown case, wake up all threads to ensure clean shutdown
+    if (is_shutting_down_) {
+        for (size_t i = 0; i < thread_count; ++i) {
+            WakeupEventLoopThread(i);
+        }
+        return;
+    }
     
     // Get the next candidate thread
     size_t start_index = next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % thread_count;
@@ -698,20 +706,9 @@ void TaskProcessor::WakeupEventLoop() {
         }
     }
     
-    // If no sleeping thread was found or if we're shutting down,
-    // wake up all threads to ensure we don't deadlock
-    if (!found_sleeping || is_shutting_down_) {
-        // First wake up the start_index thread as a priority
+    // If no sleeping thread was found, wake up the start_index thread
+    if (!found_sleeping) {
         WakeupEventLoopThread(start_index);
-        
-        // If shutting down, also wake all other threads to ensure clean shutdown
-        if (is_shutting_down_) {
-            for (size_t i = 0; i < thread_count; ++i) {
-                if (i != start_index) {
-                    WakeupEventLoopThread(i);
-                }
-            }
-        }
     }
 }
 
