@@ -677,7 +677,8 @@ void TaskProcessor::WakeupEventLoop() const {
     if (UseEvThreadPool()) return;
     
     const auto shard_index = utils::RandRange(next_wakeup_thread_index_per_shard_.size());
-    const auto index = next_wakeup_thread_index_per_shard_[shard_index].fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
+    auto& index_ref = next_wakeup_thread_index_per_shard_[shard_index];
+    const auto index = index_ref.fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
     WakeupEventLoopThread(index);
 }
 
