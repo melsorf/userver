@@ -87,8 +87,8 @@ public:
 
     void UnregisterFd(int fd);
     
-    void WakeupEventLoop() const;
-    void WakeupEventLoopThread(std::size_t thread_index) const;
+    void WakeupEventLoop();
+    void WakeupEventLoopThread(std::size_t thread_index);
 #endif // __linux__
 
 private:

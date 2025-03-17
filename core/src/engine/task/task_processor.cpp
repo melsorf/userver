@@ -653,7 +653,7 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
 }
 
-void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
+void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) {
     if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
     
     const int event_fd = per_thread_event_fds_[thread_index];
@@ -673,7 +673,7 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
     }
 }
 
-void TaskProcessor::WakeupEventLoop() const {
+void TaskProcessor::WakeupEventLoop() {
     if (UseEvThreadPool()) return;
     
     const auto shard_index = utils::RandRange(next_wakeup_thread_index_per_shard_.size());
