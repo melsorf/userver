@@ -88,8 +88,7 @@ public:
     void UnregisterFd(int fd);
     
     void WakeupEventLoop() const;
-    bool WakeupEventLoopThread(std::size_t thread_index) const;
-    void WakeupOneEventLoopThread() const;
+    void WakeupEventLoopThread(std::size_t thread_index) const;
 #endif // __linux__
 
 private:
@@ -156,6 +155,9 @@ private:
     std::vector<int> per_thread_event_fds_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
+
+    std::vector<std::atomic<bool>> thread_sleeping_;
+    std::atomic<size_t> next_thread_to_wake_{0};
 #endif  // __linux__
 };
 

@@ -125,10 +125,6 @@ int CreateEventFd() {
     }
     return fd;
 }
-
-// Atomic variable to store the index of the last woken thread.
-std::atomic<std::size_t> last_woken_thread_index{0};
-
 #endif  // __linux__
 
 }  // namespace
@@ -164,6 +160,10 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             }
             for (auto& event_fd : per_thread_event_fds_) {
                 event_fd = CreateEventFd();
+            }
+            thread_sleeping_.resize(config_.worker_threads);
+            for (auto& sleeping : thread_sleeping_) {
+                sleeping.store(false);
             }
         }
 #endif  // __linux__
@@ -657,31 +657,11 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
 }
 
-void TaskProcessor::WakeupOneEventLoopThread() const {
-    if (UseEvThreadPool()) return;
-
-    const std::size_t num_threads = per_thread_event_fds_.size();
-    if (num_threads == 0) return;
-
-    // Find the next thread to wake up
-    std::size_t start_index = last_woken_thread_index.load(std::memory_order_relaxed);
-    std::size_t next_index = start_index;
-    for (std::size_t i = 0; i < num_threads; ++i) {
-        next_index = (start_index + i + 1) % num_threads;
-
-        // Try to wake up the selected thread
-        if (WakeupEventLoopThread(next_index)) {
-            last_woken_thread_index.store(next_index, std::memory_order_relaxed);
-            return;
-        }
-    }
-}
-
-bool TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
-    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return false;
+void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
     
     const int event_fd = per_thread_event_fds_[thread_index];
-    if (event_fd < 0) return false;
+    if (event_fd < 0) return;
     
     uint64_t value = 1;
     ssize_t ret;
@@ -694,13 +674,29 @@ bool TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
             LOG_ERROR() << "Failed to write to event_fd " << event_fd 
                 << " (thread " << thread_index << "): " << strerror(errno);
         }
-        return false;
     }
-    return true;
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    WakeupOneEventLoopThread();
+    if (UseEvThreadPool()) return;
+    
+    size_t thread_count = thread_sleeping_.size();
+    if (thread_count == 0) return;
+    
+    // Try to find a sleeping thread
+    size_t start_index = next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % thread_count;
+    
+    // First attempt: try to find a sleeping thread
+    for (size_t i = 0; i < thread_count; ++i) {
+        const size_t idx = (start_index + i) % thread_count;
+        if (thread_sleeping_[idx].load(std::memory_order_acquire)) {
+            WakeupEventLoopThread(idx);
+            return;
+        }
+    }
+    
+    // Second attempt: if no sleeping threads found, wake up the start_index thread
+    WakeupEventLoopThread(start_index);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -772,7 +768,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
+        thread_sleeping_[thread_index].store(true, std::memory_order_release);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        thread_sleeping_[thread_index].store(false, std::memory_order_release);
         if (is_shutting_down_) break;
         if (ready < 0) {
             if (errno == EINTR) continue;
