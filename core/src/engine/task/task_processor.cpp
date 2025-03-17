@@ -680,7 +680,7 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
 void TaskProcessor::WakeupEventLoop() {
     if (UseEvThreadPool()) return;
     
-    size_t thread_count = thread_sleeping_.size();
+    size_t thread_count = config_.worker_threads;
     if (thread_count == 0) return;
     
     // Try to find a sleeping thread
