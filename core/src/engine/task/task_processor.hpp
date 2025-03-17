@@ -89,7 +89,6 @@ public:
     
     void WakeupEventLoop() const;
     void WakeupEventLoopThread(std::size_t thread_index) const;
-    void WakeupBestThread() const;
 #endif // __linux__
 
 private:
@@ -154,9 +153,9 @@ private:
     std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
     std::vector<int> per_thread_epoll_fds_;
     std::vector<int> per_thread_event_fds_;
-    std::vector<std::atomic<bool>> is_thread_working_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
+    mutable std::vector<std::chrono::steady_clock::time_point> epoll_wait_start_times_;
 #endif  // __linux__
 };
 

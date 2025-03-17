@@ -143,17 +143,8 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     task_counter_(config.worker_threads),
     config_(std::move(config)),
     pools_(std::move(pools))
-#ifdef __linux__
-    , is_thread_working_(config.worker_threads)
-#endif
 {
     utils::impl::FinishStaticRegistration();
-
-#ifdef __linux__
-    for (auto &flag : is_thread_working_) {
-        flag.store(false, std::memory_order_relaxed);
-    }
-#endif
 
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
@@ -164,6 +155,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             per_thread_event_fds_.resize(config_.worker_threads, -1);
+            epoll_wait_start_times_.resize(workers_.size(), std::chrono::steady_clock::time_point::max());
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
             }
@@ -262,9 +254,7 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 
 #ifdef __linux__
-    if (!UseEvThreadPool()) {
-        WakeupBestThread();
-    }
+    WakeupEventLoop();
 #endif  // __linux__
 }
 
@@ -682,27 +672,18 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
                 << " (thread " << thread_index << "): " << strerror(errno);
         }
     }
+    epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::time_point::max(); 
 }
 
 void TaskProcessor::WakeupEventLoop() const {
     if (UseEvThreadPool()) return;
     
-    for (size_t i = 0; i < per_thread_event_fds_.size(); ++i) {
-        WakeupEventLoopThread(i);
-    }
-}
-
-void TaskProcessor::WakeupBestThread() const {
-    if (per_thread_event_fds_.empty()) return;
+    // Find the thread with the earliest last wake-up time
+    const auto earliest_thread_index = std::distance(
+        epoll_wait_start_times_.begin(),
+        std::min_element(epoll_wait_start_times_.begin(), epoll_wait_start_times_.end()));
   
-    for (size_t i = 0; i < config_.worker_threads; ++i) {
-        if (!is_thread_working_[i].load(std::memory_order_relaxed)) {
-            WakeupEventLoopThread(i);
-            return;
-        }
-    }
-
-    WakeupEventLoopThread(utils::RandRange(config_.worker_threads));
+    WakeupEventLoopThread(earliest_thread_index);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -727,8 +708,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
-        // Set thread status to working
-        is_thread_working_[thread_index].store(true, std::memory_order_relaxed);
         while (auto context_ptr = queue.PopNonBlocking()) {
             if (!context_ptr.has_value()) {
                 // "Stop" token
@@ -753,8 +732,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 context->FinishDetached();
             }
         }
-        // Set thread status to idle
-        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
 
         if (is_shutting_down_) break;
         
@@ -778,8 +755,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
-        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
+        epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::now();
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        epoll_wait_start_times_[thread_index] = std::chrono::steady_clock::time_point::max();
         if (is_shutting_down_) break;
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -787,7 +765,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             break;
         }
 
-        is_thread_working_[thread_index].store(true, std::memory_order_relaxed);
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
             if (fd == event_fd) {
@@ -846,8 +823,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
         }
-        // Set thread status to idle
-        is_thread_working_[thread_index].store(false, std::memory_order_relaxed);
     }
 }
 #endif  // __linux__
