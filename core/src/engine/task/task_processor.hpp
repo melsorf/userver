@@ -89,6 +89,8 @@ public:
     
     void WakeupEventLoop();
     void WakeupEventLoopThread(std::size_t thread_index);
+
+    bool CheckAndProcessTasks(TaskQueue& queue);
 #endif // __linux__
 
 private:

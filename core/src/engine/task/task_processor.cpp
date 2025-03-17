@@ -673,6 +673,28 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) {
     }
 }
 
+bool TaskProcessor::CheckAndProcessTasks(TaskQueue& queue) {
+    auto context_ptr = queue.PopNonBlocking();
+    if (!context_ptr.has_value()) {
+        // No tasks
+        return false;
+    }
+    
+    if (!context_ptr.value()) {
+        // "Stop" token
+        is_shutting_down_ = true;
+        return true;
+    }
+    
+    // Return the task to the queue and continue from the beginning of the loop
+    if (context_ptr.value()) {
+        queue.Push(std::move(context_ptr.value()));
+        return true;
+    }
+    
+    return false;
+}
+
 void TaskProcessor::WakeupEventLoop() {
     if (UseEvThreadPool()) return;
     
@@ -732,22 +754,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (is_shutting_down_) break;
         
         // Check again for tasks before going to epoll_wait
-        {
-            auto context_ptr = queue.PopNonBlocking();
-            if (context_ptr.has_value()) {
-                if (!context_ptr.value()) {
-                    // "Stop" token
-                    is_shutting_down_ = true;
-                    break;
-                }
-                
-                // Put it back and continue processing from the top
-                if (context_ptr.value()) {
-                    queue.Push(std::move(context_ptr.value()));
-                }
-                continue;
-            }
-        }
+        if (CheckAndProcessTasks(queue)) continue;
 
         if (is_shutting_down_) break;
 
@@ -758,6 +765,10 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             break;
         }
+
+        if (CheckAndProcessTasks(queue)) continue;
+        // Counter for periodic task checking during event processing
+        int processed_events = 0;
 
         for (int i = 0; i < ready && !is_shutting_down_; ++i) {
             const auto fd = events[i].data.fd;
@@ -772,6 +783,9 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
+
+                // Immediately after processing event_fd check for tasks
+                if (CheckAndProcessTasks(queue)) break;
                 continue; // Continue to next event
             }
             // Handle regular file descriptor events
@@ -816,6 +830,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 // File descriptor registered but no callback found
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
+            if (++processed_events % 8 == 0 && CheckAndProcessTasks(queue)) break;
         }
     }
 }
