@@ -161,9 +161,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (auto& event_fd : per_thread_event_fds_) {
                 event_fd = CreateEventFd();
             }
-            for (auto& sleeping : thread_is_sleeping_) {
-                sleeping.store(false);
-            }
         }
 #endif  // __linux__
 
@@ -679,53 +676,9 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
 void TaskProcessor::WakeupEventLoop() const {
     if (UseEvThreadPool()) return;
     
-    // Looking for a sleeping thread
-    std::size_t threads_count = thread_is_sleeping_.size();
-    if (threads_count > 0) {
-        // First check a few random threads - it's faster than checking everything
-        constexpr int kMaxRandomChecks = 4;
-        for (std::size_t i = 0; i < kMaxRandomChecks && i < threads_count; ++i) {
-            std::size_t idx = utils::RandRange(threads_count);
-            if (thread_is_sleeping_[idx].load(std::memory_order_relaxed)) {
-                WakeupEventLoopThread(idx);
-                return;
-            }
-        }
-        
-        // If the random check does not find sleeping threads, check everything in order
-        for (std::size_t i = 0; i < threads_count; ++i) {
-            if (thread_is_sleeping_[i].load(std::memory_order_relaxed)) {
-                WakeupEventLoopThread(i);
-                return;
-            }
-        }
+    for (size_t i = 0; i < per_thread_event_fds_.size(); ++i) {
+        WakeupEventLoopThread(i);
     }
-    
-    const auto shard_index = utils::RandRange(next_wakeup_thread_index_per_shard_.size());
-    auto& index_ref = next_wakeup_thread_index_per_shard_[shard_index];
-    const auto index = index_ref.fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
-    WakeupEventLoopThread(index);
-}
-
-bool TaskProcessor::CheckAndProcessTasks(TaskQueue& queue) {
-    auto context_ptr = queue.PopNonBlocking();
-    if (!context_ptr.has_value()) {
-        // No tasks
-        return false;
-    }
-    
-    if (!context_ptr.value()) {
-        // "Stop" token
-        is_shutting_down_ = true;
-        return true;
-    }
-    
-    if (context_ptr.value()) {
-        queue.Push(std::move(context_ptr.value()));
-        return true;
-    }
-    
-    return false;
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -776,18 +729,29 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         if (is_shutting_down_) break;
-        if (CheckAndProcessTasks(queue)) continue;
+        
+        // Check again for tasks before going to epoll_wait
+        {
+            auto context_ptr = queue.PopNonBlocking();
+            if (context_ptr.has_value()) {
+                if (!context_ptr.value()) {
+                    // "Stop" token
+                    is_shutting_down_ = true;
+                    break;
+                }
+                
+                // Put it back and continue processing from the top
+                if (context_ptr.value()) {
+                    queue.Push(std::move(context_ptr.value()));
+                }
+                continue;
+            }
+        }
+
         if (is_shutting_down_) break;
 
-        if (thread_index < thread_is_sleeping_.size()) {
-            thread_is_sleeping_[thread_index].store(true, std::memory_order_relaxed);
-        }
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        if (thread_index < thread_is_sleeping_.size()) {
-            thread_is_sleeping_[thread_index].store(false, std::memory_order_relaxed);
-        }
         if (is_shutting_down_) break;
-
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
