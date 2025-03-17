@@ -125,6 +125,10 @@ int CreateEventFd() {
     }
     return fd;
 }
+
+// Atomic variable to store the index of the last woken thread.
+std::atomic<std::size_t> last_woken_thread_index{0};
+
 #endif  // __linux__
 
 }  // namespace
@@ -653,11 +657,31 @@ void TaskProcessor::UnregisterFd(int fd) {
     }
 }
 
-void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
-    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
+void TaskProcessor::WakeupOneEventLoopThread() const {
+    if (UseEvThreadPool()) return;
+
+    const std::size_t num_threads = per_thread_event_fds_.size();
+    if (num_threads == 0) return;
+
+    // Find the next thread to wake up
+    std::size_t start_index = last_woken_thread_index.load(std::memory_order_relaxed);
+    std::size_t next_index = start_index;
+    for (std::size_t i = 0; i < num_threads; ++i) {
+        next_index = (start_index + i + 1) % num_threads;
+
+        // Try to wake up the selected thread
+        if (WakeupEventLoopThread(next_index)) {
+            last_woken_thread_index.store(next_index, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
+bool TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return false;
     
     const int event_fd = per_thread_event_fds_[thread_index];
-    if (event_fd < 0) return;
+    if (event_fd < 0) return false;
     
     uint64_t value = 1;
     ssize_t ret;
@@ -670,15 +694,13 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
             LOG_ERROR() << "Failed to write to event_fd " << event_fd 
                 << " (thread " << thread_index << "): " << strerror(errno);
         }
+        return false;
     }
+    return true;
 }
 
 void TaskProcessor::WakeupEventLoop() const {
-    if (UseEvThreadPool()) return;
-    
-    for (size_t i = 0; i < per_thread_event_fds_.size(); ++i) {
-        WakeupEventLoopThread(i);
-    }
+    WakeupOneEventLoopThread();
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
