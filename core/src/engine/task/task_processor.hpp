@@ -87,8 +87,8 @@ public:
 
     void UnregisterFd(int fd);
     
-    void WakeupEventLoop();
-    void WakeupEventLoopThread(std::size_t thread_index);
+    void WakeupEventLoop() const;
+    void WakeupEventLoopThread(std::size_t thread_index) const;
 
     bool CheckAndProcessTasks(TaskQueue& queue);
 #endif // __linux__
@@ -157,9 +157,7 @@ private:
     std::vector<int> per_thread_event_fds_;
     std::unordered_map<int, std::size_t> fd_to_thread_index_;
     std::mutex fd_map_mtx_;
-
-    static constexpr size_t kEventFdShards = 32;
-    std::array<std::atomic<std::size_t>, kEventFdShards> next_wakeup_thread_index_per_shard_{};
+    std::vector<std::atomic<bool>> thread_is_sleeping_;
 #endif  // __linux__
 };
 
