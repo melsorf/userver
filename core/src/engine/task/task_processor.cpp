@@ -812,8 +812,9 @@ void TaskProcessor::ProcessTasksNonBlocking() noexcept {
     
     auto context = std::visit([](auto&& arg) -> impl::TaskContext* {
         if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, TaskQueue>) {
-            if (auto task = arg.PopNonBlocking()) {
-                return task.get();
+            auto task = arg.PopNonBlocking();
+            if (task) {
+                return task->get();
             }
         }
         return nullptr;
