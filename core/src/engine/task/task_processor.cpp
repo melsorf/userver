@@ -683,20 +683,36 @@ void TaskProcessor::WakeupEventLoop() {
     size_t thread_count = config_.worker_threads;
     if (thread_count == 0) return;
     
-    // Try to find a sleeping thread
+    // Get the next candidate thread
     size_t start_index = next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % thread_count;
+    
+    bool found_sleeping = false;
     
     // First attempt: try to find a sleeping thread
     for (size_t i = 0; i < thread_count; ++i) {
         const size_t idx = (start_index + i) % thread_count;
         if (thread_sleeping_[idx].load(std::memory_order_acquire)) {
             WakeupEventLoopThread(idx);
-            return;
+            found_sleeping = true;
+            break;
         }
     }
     
-    // Second attempt: if no sleeping threads found, wake up the start_index thread
-    WakeupEventLoopThread(start_index);
+    // If no sleeping thread was found or if we're shutting down,
+    // wake up all threads to ensure we don't deadlock
+    if (!found_sleeping || is_shutting_down_) {
+        // First wake up the start_index thread as a priority
+        WakeupEventLoopThread(start_index);
+        
+        // If shutting down, also wake all other threads to ensure clean shutdown
+        if (is_shutting_down_) {
+            for (size_t i = 0; i < thread_count; ++i) {
+                if (i != start_index) {
+                    WakeupEventLoopThread(i);
+                }
+            }
+        }
+    }
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -769,6 +785,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         if (is_shutting_down_) break;
 
         thread_sleeping_[thread_index].store(true, std::memory_order_release);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleeping_[thread_index].store(false, std::memory_order_release);
         if (is_shutting_down_) break;
