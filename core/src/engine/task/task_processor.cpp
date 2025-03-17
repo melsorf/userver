@@ -809,7 +809,15 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 }
 
 void TaskProcessor::ProcessTasksNonBlocking() noexcept {
-    auto context = std::visit([](auto&& arg) { return arg.PopNonBlocking(); }, task_queue_);
+    
+    auto context = std::visit([](auto&& arg) -> impl::TaskContext* {
+        if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, TaskQueue>) {
+            if (auto task = arg.PopNonBlocking()) {
+                return task.get();
+            }
+        }
+        return nullptr;
+    }, task_queue_);
     if (!context) return;
 
     CheckWaitTime(*context);
