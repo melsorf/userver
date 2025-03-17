@@ -155,7 +155,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         if (!UseEvThreadPool()) {
             per_thread_epoll_fds_.resize(config_.worker_threads);
             per_thread_event_fds_.resize(config_.worker_threads, -1);
-            epoll_wait_start_times_.resize(workers_.size(), std::chrono::steady_clock::time_point::max());
+            epoll_wait_start_times_.resize(config_.worker_threads, std::chrono::steady_clock::time_point::max());
             for (auto& epoll_fd : per_thread_epoll_fds_) {
                 epoll_fd = CreateEpollFd();
             }
@@ -655,7 +655,8 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
-    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size() || 
+        thread_index >= epoll_wait_start_times_.size()) return;
     
     const int event_fd = per_thread_event_fds_[thread_index];
     if (event_fd < 0) return;
