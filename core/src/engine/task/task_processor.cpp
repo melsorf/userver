@@ -700,6 +700,11 @@ void TaskProcessor::WakeupEventLoop() const {
     if (thread_to_wake < thread_count) {
         WakeupEventLoopThread(thread_to_wake);
     }
+
+    // If the task queue is not empty, wake up a different thread
+    if (GetTaskQueueSize() > 0) {
+        WakeupEventLoop();
+    }
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
