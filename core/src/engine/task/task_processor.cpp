@@ -807,8 +807,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
                 }
-                // Immediately after processing event_fd check for tasks
-                if (CheckAndProcessTasks(queue)) break;
                 continue; // Continue to next event
             }
             // Handle regular file descriptor events
