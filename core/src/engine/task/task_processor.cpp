@@ -684,27 +684,25 @@ void TaskProcessor::WakeupEventLoop() const {
     const auto thread_count = per_thread_event_fds_.size();
     if (thread_count == 0) return;
     
+    const auto queue_size = GetTaskQueueSize();
+    const auto threads_to_wake = std::min(queue_size > 0 ? queue_size : 1, thread_count);
+
+    for (std::size_t i = 0; i < threads_to_wake; ++i) {
+        WakeupEventLoopThread(GetNextThreadToWake());
+    }
+}
+
+std::size_t TaskProcessor::GetNextThreadToWake() const {
     // First try to find a thread that's in epoll_wait
     const auto earliest_thread_index = std::distance(
         epoll_wait_start_times_.begin(),
         std::min_element(epoll_wait_start_times_.begin(), epoll_wait_start_times_.end()));
     if (epoll_wait_start_times_[earliest_thread_index] != std::chrono::steady_clock::time_point::max()) {
-        WakeupEventLoopThread(earliest_thread_index);
-        return;
+        return earliest_thread_index;
     }
 
     // If no thread is in epoll_wait, use round-robin
-    const auto thread_to_wake = next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % thread_count;
-    
-    // Make sure we have a valid thread index
-    if (thread_to_wake < thread_count) {
-        WakeupEventLoopThread(thread_to_wake);
-    }
-
-    for (int i = 0; i < GetTaskQueueSize(); ++i) {
-        const auto next_thread_to_wake = (thread_to_wake + i + 1) % thread_count;
-        WakeupEventLoopThread(next_thread_to_wake);
-    }
+    return next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % per_thread_event_fds_.size();
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
