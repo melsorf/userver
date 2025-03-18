@@ -89,6 +89,8 @@ public:
     
     void WakeupEventLoop();
     void WakeupEventLoopThread(std::size_t thread_index) const;
+
+    bool SpinBeforeEpollWait(std::size_t thread_index);
 #endif // __linux__
 
 private:
