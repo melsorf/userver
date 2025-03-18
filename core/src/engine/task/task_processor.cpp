@@ -667,16 +667,24 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
     const int event_fd = per_thread_event_fds_[thread_index];
     if (event_fd < 0) return;
     
-    uint64_t value = 1;
-    ssize_t ret;
-    do {
-        ret = write(event_fd, &value, sizeof(value));
-    } while (ret == -1 && errno == EINTR);
-    
-    if (ret != sizeof(value)) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            LOG_ERROR() << "Failed to write to event_fd " << event_fd 
-                << " (thread " << thread_index << "): " << strerror(errno);
+    uint64_t expected_sleep_time = thread_sleep_start_time_[thread_index].load(std::memory_order_acquire);
+    if (expected_sleep_time == 0) {
+        // Thread is not sleeping
+        return;
+    }
+    if (expected_sleep_time_[thread_index].compare_exchange_strong(expected_sleep_time, 0, std::memory_order_acq_rel)) {
+        // Thread is sleeping, wake it up
+        uint64_t value = 1;
+        ssize_t ret;
+        do {
+            ret = write(event_fd, &value, sizeof(value));
+        } while (ret == -1 && errno == EINTR);
+        
+        if (ret != sizeof(value)) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR() << "Failed to write to event_fd " << event_fd 
+                    << " (thread " << thread_index << "): " << strerror(errno);
+            }
         }
     }
 }
@@ -697,7 +705,6 @@ void TaskProcessor::WakeupEventLoop() {
 
     // 1. Check for spinning threads first
     // 2. If no spinning threads, check for sleeping threads
-    // 3. If no sleeping threads, check for least-recently-woken
 
     // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
@@ -731,13 +738,6 @@ void TaskProcessor::WakeupEventLoop() {
         WakeupEventLoopThread(best_thread_idx);
         return;
     }
-
-    // No spinning or sleeping threads found
-    // Use a random approach
-    static std::atomic<size_t> next_thread_index{0};
-    size_t thread_index = next_thread_index.fetch_add(1, std::memory_order_relaxed) % thread_count;
-    
-    WakeupEventLoopThread(thread_index);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -815,7 +815,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
-        std::atomic_thread_fence(std::memory_order_seq_cst);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         if (is_shutting_down_) break;
