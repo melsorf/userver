@@ -887,7 +887,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 }
 
 bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
-    const auto spin_count = config_.spinning_iterations;
+    const auto spin_count = config_.spinning_iterations / 4;
     auto& queue = std::get<TaskQueue>(task_queue_);
     bool task_found_during_spin = false;
 
