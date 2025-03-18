@@ -553,14 +553,13 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (fd < 0) {
-        return std::numeric_limits<std::size_t>::max();
-    }
+    if (fd < 0) return std::numeric_limits<std::size_t>::max();
     if (UseEvThreadPool()) return 0;
     if (per_thread_epoll_fds_.empty()) {
         LOG_WARNING() << "RegisterFd called but per_thread_epoll_fds_ is empty";
         return std::numeric_limits<std::size_t>::max();
     }
+    
     std::size_t index;
     {
         std::lock_guard<std::mutex> lock(fd_map_mtx_);
@@ -568,7 +567,8 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
         if (existing_it != fd_to_thread_index_.end()) {
             index = existing_it->second;
         } else {
-            index = task_counter_.GetLocalTaskThreadId() % per_thread_epoll_fds_.size();
+            // Distribute descriptors evenly among threads
+            index = utils::RandRange(per_thread_epoll_fds_.size());
             fd_to_thread_index_[fd] = index;
         }
     }
@@ -577,6 +577,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
     ev.events = events | EPOLLET;
     ev.data.fd = fd;
 
+    bool registration_successful = false;
     {
         std::lock_guard<std::mutex> lock(epoll_mtx_);
         int epoll_fd = per_thread_epoll_fds_[index];
@@ -586,6 +587,7 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
         if (has_existing) {
             op = EPOLL_CTL_MOD;
         }
+        
         int result = epoll_ctl(epoll_fd, op, fd, &ev);
         if (result == -1) {
             if (errno == EEXIST && op == EPOLL_CTL_ADD) {
@@ -595,18 +597,25 @@ std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<voi
             if (result == -1) {
                 LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
                     << " fd " << fd << " to per-thread epoll: " << strerror(errno);
-                
-                // Remove the fd from the map if it was not added
-                if (!has_existing) {
-                    std::lock_guard<std::mutex> idx_lock(fd_map_mtx_);
-                    fd_to_thread_index_.erase(fd);
-                }
-                return std::numeric_limits<std::size_t>::max();
+            } else {
+                registration_successful = true;
             }
+        } else {
+            registration_successful = true;
         }
 
-        fd_callbacks_[fd] = std::move(callback);
+        if (registration_successful) {
+            fd_callbacks_[fd] = std::move(callback);
+        }
     }
+
+    if (!registration_successful) {
+        // Remove fd from map if registration fails
+        std::lock_guard<std::mutex> idx_lock(fd_map_mtx_);
+        fd_to_thread_index_.erase(fd);
+        return std::numeric_limits<std::size_t>::max();
+    }
+    
     return index;
 }
 
@@ -666,6 +675,11 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
     
     const int event_fd = per_thread_event_fds_[thread_index];
     if (event_fd < 0) return;
+
+    uint64_t expected_sleep_time = thread_sleep_start_time_[thread_index].load(std::memory_order_acquire);
+    if (expected_sleep_time != 0) {
+        thread_sleep_start_time_[thread_index].compare_exchange_strong(expected_sleep_time, 0, std::memory_order_acq_rel);
+    }
     
     uint64_t value = 1;
     ssize_t ret;
@@ -701,15 +715,14 @@ void TaskProcessor::WakeupEventLoop() {
 
     // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
-        if (thread_spinning_[i].load(std::memory_order_acquire)) {
+        if (thread_spinning_[i].load(std::memory_order_acquire) && 
+            thread_spinning_[i].compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             WakeupEventLoopThread(i);
             return;
         }
     }
 
     // Second pass: Find a sleeping thread with valid timestamp
-    size_t best_thread_idx = SIZE_MAX;
-    uint64_t longest_sleep_time = 0;
     
     for (size_t i = 0; i < thread_count; ++i) {
         auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
@@ -719,17 +732,11 @@ void TaskProcessor::WakeupEventLoop() {
             continue;
         }
         
-        // Select the thread that has been sleeping the longest
-        if (best_thread_idx == SIZE_MAX || sleep_timestamp < longest_sleep_time) {
-            best_thread_idx = i;
-            longest_sleep_time = sleep_timestamp;
+        if (thread_sleep_start_time_[i].compare_exchange_strong(
+            sleep_timestamp, 0, std::memory_order_acq_rel)) {
+            WakeupEventLoopThread(i);
+            return;
         }
-    }
-
-    // If we found a suitable sleeping thread, wake it up
-    if (best_thread_idx != SIZE_MAX) {
-        WakeupEventLoopThread(best_thread_idx);
-        return;
     }
 
     // No spinning or sleeping threads found
@@ -846,18 +853,19 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 continue; // Continue to next event
             }
             // Handle regular file descriptor events
-            std::unique_lock<std::mutex> lock(epoll_mtx_);
-            auto it = fd_callbacks_.find(fd);
-            if (it != fd_callbacks_.end()) {
-                auto callback = it->second;
-                auto event_mask = events[i].events;
-                lock.unlock();
-
-                // Include all relevant event types
+            std::function<void(uint32_t)> callback_copy;
+            {
+                std::unique_lock<std::mutex> lock(epoll_mtx_);
+                auto it = fd_callbacks_.find(fd);
+                if (it != fd_callbacks_.end()) {
+                    callback_copy = it->second;
+                }
+            }
+            if (callback_copy) {
                 uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (filtered_events) {
                     try {
-                        callback(filtered_events);
+                        callback_сщзн(filtered_events);
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {
@@ -868,7 +876,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 // Don't try to rearm if EPOLLHUP or EPOLLERR were signaled
                 // as the file descriptor may no longer be valid
                 if (!(event_mask & (EPOLLHUP | EPOLLERR))) {
-                    lock.lock();
+                    std::unique_lock<std::mutex> lock(epoll_mtx_);
                     // Check if callback is still registered (could've been removed during execution)
                     it = fd_callbacks_.find(fd);
                     if (it != fd_callbacks_.end()) {
@@ -896,9 +904,9 @@ bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
     auto& queue = std::get<TaskQueue>(task_queue_);
     bool task_found_during_spin = false;
 
-    thread_spinning_[thread_index].store(true, std::memory_order_relaxed);
+    thread_spinning_[thread_index].store(true, std::memory_order_release);
     utils::FastScopeGuard spinning_guard([&] () noexcept {
-        thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
+        thread_spinning_[thread_index].store(false, std::memory_order_release);
     });
     for (int i = 0; i < spin_count; ++i) {
         if (queue.GetSizeApproximate() > 0) {
