@@ -712,8 +712,6 @@ void TaskProcessor::WakeupEventLoop() {
     }
 
     // Second pass: Find a sleeping thread with valid timestamp
-    size_t best_thread_idx = SIZE_MAX;
-    uint64_t longest_sleep_time = 0;
     
     for (size_t i = 0; i < thread_count; ++i) {
         auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
