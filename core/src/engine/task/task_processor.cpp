@@ -165,10 +165,11 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (size_t i = 0; i < config_.worker_threads; ++i) {
                 thread_spinning_[i].store(false, std::memory_order_relaxed);
             }
-            thread_sleep_start_time_ = std::make_unique<std::atomic<std::chrono::steady_clock::time_point>[]>(config_.worker_threads);
+            thread_sleep_start_time_ = std::make_unique<std::atomic<uint64_t>[]>(config_.worker_threads);
             for (size_t i = 0; i < config_.worker_threads; ++i) {
-                thread_sleep_start_time_[i].store(std::chrono::steady_clock::time_point{}, std::memory_order_relaxed);
+                thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
             }
+            last_wakeup_times_.resize(config_.worker_threads);
         }
 #endif  // __linux__
 
@@ -709,20 +710,20 @@ void TaskProcessor::WakeupEventLoop() {
 
     // Second pass: Find a sleeping thread with valid timestamp
     size_t best_thread_idx = SIZE_MAX;
-    std::chrono::steady_clock::time_point longest_sleep_time{};
+    uint64_t longest_sleep_time = 0;
     
     for (size_t i = 0; i < thread_count; ++i) {
-        auto sleep_start = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+        auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
         
         // Skip threads with uninitialized timestamps
-        if (sleep_start == std::chrono::steady_clock::time_point{}) {
+        if (sleep_timestamp == 0) {
             continue;
         }
         
         // Select the thread that has been sleeping the longest
-        if (best_thread_idx == SIZE_MAX || sleep_start < longest_sleep_time) {
+        if (best_thread_idx == SIZE_MAX || sleep_timestamp < longest_sleep_time) {
             best_thread_idx = i;
-            longest_sleep_time = sleep_start;
+            longest_sleep_time = sleep_timestamp;
         }
     }
 
@@ -733,33 +734,37 @@ void TaskProcessor::WakeupEventLoop() {
     }
 
     // No spinning or sleeping threads found
-    // Track last wakeup time to avoid repeatedly waking up the same thread
-    static thread_local std::vector<std::chrono::steady_clock::time_point> last_wakeup_times;
-    if (last_wakeup_times.size() != thread_count) {
-        last_wakeup_times.resize(thread_count);
+    // Select thread based on shared wakeup history
+    std::lock_guard<std::mutex> lock(wakeup_history_mutex_);
+    
+    if (last_wakeup_times_.size() != thread_count) {
+        last_wakeup_times_.resize(thread_count);
     }
     
-    // Find the thread that was woken up least recently
+    // Find the least recently woken thread
     size_t least_recent_idx = 0;
     auto now = std::chrono::steady_clock::now();
     auto least_recent_time = now;
+    bool found_uninitialized = false;
     
     for (size_t i = 0; i < thread_count; ++i) {
-        auto last_wakeup = last_wakeup_times[i];
-        // Skip uninitialized timestamps
+        const auto& last_wakeup = last_wakeup_times_[i];
+        
+        // Prioritize threads that have never been woken up
         if (last_wakeup == std::chrono::steady_clock::time_point{}) {
             least_recent_idx = i;
-            break;
-        }
-        
-        if (last_wakeup < least_recent_time) {
+            found_uninitialized = true;
+        } else if (!found_uninitialized && last_wakeup < least_recent_time) {
             least_recent_idx = i;
             least_recent_time = last_wakeup;
         }
     }
     
+    // Update wakeup time and unlock before slow I/O operation
+    last_wakeup_times_[least_recent_idx] = now;
+    lock.unlock();
+    
     WakeupEventLoopThread(least_recent_idx);
-    last_wakeup_times[least_recent_idx] = now;
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -836,10 +841,10 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             continue; // Skip epoll_wait if task was found during spin
         }
 
-        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now(), std::memory_order_release);
+        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::time_point{}, std::memory_order_release);
+        thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         if (is_shutting_down_) break;
         if (ready < 0) {
             if (errno == EINTR) continue;

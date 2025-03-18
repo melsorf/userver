@@ -159,7 +159,10 @@ private:
     std::mutex fd_map_mtx_;
 
     std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
-    std::unique_ptr<std::atomic<std::chrono::steady_clock::time_point>[]> thread_sleep_start_time_;
+    std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
+
+    std::mutex wakeup_history_mutex_;
+    std::vector<std::chrono::steady_clock::time_point> last_wakeup_times_;
 #endif  // __linux__
 };
 
