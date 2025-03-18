@@ -908,8 +908,6 @@ bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
         }
         std::this_thread::yield(); // Relax the CPU
     }
-    thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
-
     return task_found_during_spin || is_shutting_down_;
 }
 #endif  // __linux__
