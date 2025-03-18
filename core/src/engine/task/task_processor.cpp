@@ -734,37 +734,11 @@ void TaskProcessor::WakeupEventLoop() {
     }
 
     // No spinning or sleeping threads found
-    // Select thread based on shared wakeup history
-    std::unique_lock<std::mutex> lock(wakeup_history_mutex_);
+    // Use a random approach
+    static std::atomic<size_t> next_thread_index{0};
+    size_t thread_index = next_thread_index.fetch_add(1, std::memory_order_relaxed) % thread_count;
     
-    if (last_wakeup_times_.size() != thread_count) {
-        last_wakeup_times_.resize(thread_count);
-    }
-    
-    // Find the least recently woken thread
-    size_t least_recent_idx = 0;
-    auto now = std::chrono::steady_clock::now();
-    auto least_recent_time = now;
-    bool found_uninitialized = false;
-    
-    for (size_t i = 0; i < thread_count; ++i) {
-        const auto& last_wakeup = last_wakeup_times_[i];
-        
-        // Prioritize threads that have never been woken up
-        if (last_wakeup == std::chrono::steady_clock::time_point{}) {
-            least_recent_idx = i;
-            found_uninitialized = true;
-        } else if (!found_uninitialized && last_wakeup < least_recent_time) {
-            least_recent_idx = i;
-            least_recent_time = last_wakeup;
-        }
-    }
-    
-    // Update wakeup time and unlock before slow I/O operation
-    last_wakeup_times_[least_recent_idx] = now;
-    lock.unlock();
-    
-    WakeupEventLoopThread(least_recent_idx);
+    WakeupEventLoopThread(thread_index);
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
