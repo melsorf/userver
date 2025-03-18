@@ -923,7 +923,7 @@ bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
     bool task_found_during_spin = false;
 
     thread_spinning_[thread_index].store(true, std::memory_order_relaxed);
-    for (size_t i = 0; i < spin_count; ++i) {
+    for (int i = 0; i < spin_count; ++i) {
         if (auto context_ptr = queue.PopNonBlocking()) {
             if (!context_ptr.value()) {
                 // "Stop" token
