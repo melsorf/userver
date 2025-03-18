@@ -703,10 +703,6 @@ void TaskProcessor::WakeupEventLoop() {
         return;
     }
 
-    // 1. Check for spinning threads first
-    // 2. If no spinning threads, check for sleeping threads
-    // 3. Wake up a random thread
-
     // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
         if (thread_spinning_[i].load(std::memory_order_acquire)) {
@@ -727,17 +723,10 @@ void TaskProcessor::WakeupEventLoop() {
             continue;
         }
         
-        // Select the thread that has been sleeping the longest
-        if (best_thread_idx == SIZE_MAX || sleep_timestamp < longest_sleep_time) {
-            best_thread_idx = i;
-            longest_sleep_time = sleep_timestamp;
+        if (thread_sleep_start_time_[i].compare_exchange_strong(sleep_timestamp, 0, std::memory_order_acq_rel)) {
+            WakeupEventLoopThread(i);
+            return;
         }
-    }
-
-    // If we found a suitable sleeping thread, wake it up
-    if (best_thread_idx != SIZE_MAX) {
-        WakeupEventLoopThread(best_thread_idx);
-        return;
     }
 
     // Otherwise wake up a random thread
@@ -819,6 +808,11 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+        // Check once more before blocking to catch any pending wakeups
+        if (queue.GetSizeApproximate() > 0 || is_shutting_down_) {
+            thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
+            continue;
+        }
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         if (is_shutting_down_) break;
@@ -894,7 +888,7 @@ bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
     auto& queue = std::get<TaskQueue>(task_queue_);
     bool task_found_during_spin = false;
 
-    thread_spinning_[thread_index].store(true, std::memory_order_relaxed);
+    thread_spinning_[thread_index].store(true, std::memory_order_release);
     utils::FastScopeGuard spinning_guard([&] () noexcept {
         thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
     });
