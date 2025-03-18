@@ -699,10 +699,9 @@ void TaskProcessor::WakeupEventLoop() {
     // 2. If no spinning threads, check for sleeping threads
     // 3. If no sleeping threads, check for least-recently-woken
     
-    // Add a spinning flag for each thread
     static thread_local std::vector<std::atomic<bool>> thread_spinning_;
     if (thread_spinning_.size() != thread_count) {
-        thread_spinning_.resize(thread_count);
+        thread_spinning_ = std::vector<std::atomic<bool>>(thread_count);
         for (size_t i = 0; i < thread_count; ++i) {
             thread_spinning_[i].store(false, std::memory_order_relaxed);
         }
