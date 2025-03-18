@@ -169,7 +169,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (size_t i = 0; i < config_.worker_threads; ++i) {
                 thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
             }
-            last_wakeup_times_.resize(config_.worker_threads);
         }
 #endif  // __linux__
 
