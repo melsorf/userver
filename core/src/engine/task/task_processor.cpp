@@ -735,7 +735,7 @@ void TaskProcessor::WakeupEventLoop() {
 
     // No spinning or sleeping threads found
     // Select thread based on shared wakeup history
-    std::lock_guard<std::mutex> lock(wakeup_history_mutex_);
+    std::unique_lock<std::mutex> lock(wakeup_history_mutex_);
     
     if (last_wakeup_times_.size() != thread_count) {
         last_wakeup_times_.resize(thread_count);
