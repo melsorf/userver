@@ -741,7 +741,7 @@ void TaskProcessor::WakeupEventLoop() {
     }
 
     // Otherwise wake up a random thread
-    WakeupEventLoopThread(utils::RandomIndex(thread_count));
+    WakeupEventLoopThread(utils::RandRange(thread_count));
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
