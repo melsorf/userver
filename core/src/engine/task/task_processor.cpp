@@ -715,8 +715,8 @@ void TaskProcessor::WakeupEventLoop() {
 
     // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
-        if (thread_spinning_[i].load(std::memory_order_acquire) && 
-            thread_spinning_[i].compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        bool expected = true;
+        if (thread_spinning_[i].compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
             WakeupEventLoopThread(i);
             return;
         }
@@ -865,7 +865,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (filtered_events) {
                     try {
-                        callback_сщзн(filtered_events);
+                        callback_copy(filtered_events);
                     } catch (const std::exception& ex) {
                         LOG_ERROR() << "Exception in fd callback: " << ex;
                     } catch (...) {
