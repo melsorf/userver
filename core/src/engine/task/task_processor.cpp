@@ -721,19 +721,17 @@ void TaskProcessor::WakeupEventLoop() {
     std::chrono::steady_clock::time_point longest_sleep_time{};
     
     for (size_t i = 0; i < thread_count; ++i) {
-        if (thread_sleeping_[i].load(std::memory_order_acquire)) {
-            auto sleep_start = thread_sleep_start_time_[i].load(std::memory_order_acquire);
-            
-            // Skip threads with uninitialized timestamps
-            if (sleep_start == std::chrono::steady_clock::time_point{}) {
-                continue;
-            }
-            
-            // Select the thread that has been sleeping the longest
-            if (best_thread_idx == SIZE_MAX || sleep_start < longest_sleep_time) {
-                best_thread_idx = i;
-                longest_sleep_time = sleep_start;
-            }
+        auto sleep_start = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+        
+        // Skip threads with uninitialized timestamps
+        if (sleep_start == std::chrono::steady_clock::time_point{}) {
+            continue;
+        }
+        
+        // Select the thread that has been sleeping the longest
+        if (best_thread_idx == SIZE_MAX || sleep_start < longest_sleep_time) {
+            best_thread_idx = i;
+            longest_sleep_time = sleep_start;
         }
     }
 
