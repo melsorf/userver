@@ -264,6 +264,9 @@ void TaskContext::RequestCancel(TaskCancellationReason reason) {
                     << " cancelled task with task_id=" << ReadableTaskId(this) << logging::LogExtra::Stacktrace();
         const auto epoch = GetEpoch();
         Wakeup(WakeupSource::kCancelRequest, epoch);
+#ifdef __linux__
+    task_processor_.WakeupEventLoop();
+#endif // __linux__
     }
 }
 
