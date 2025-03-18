@@ -672,7 +672,7 @@ void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
         // Thread is not sleeping
         return;
     }
-    if (expected_sleep_time_[thread_index].compare_exchange_strong(expected_sleep_time, 0, std::memory_order_acq_rel)) {
+    if (thread_sleep_start_time_[thread_index].compare_exchange_strong(expected_sleep_time, 0, std::memory_order_acq_rel)) {
         // Thread is sleeping, wake it up
         uint64_t value = 1;
         ssize_t ret;
