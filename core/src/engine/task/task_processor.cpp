@@ -879,7 +879,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 if (!(event_mask & (EPOLLHUP | EPOLLERR))) {
                     std::unique_lock<std::mutex> lock(epoll_mtx_);
                     // Check if callback is still registered (could've been removed during execution)
-                    it = fd_callbacks_.find(fd);
+                    auto it = fd_callbacks_.find(fd);
                     if (it != fd_callbacks_.end()) {
                         struct epoll_event ev;
                         ev.events = (EPOLLIN | EPOLLOUT | EPOLLET);
@@ -892,7 +892,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                     }
                 }
             } else {
-                lock.unlock();
                 // File descriptor registered but no callback found
                 LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
