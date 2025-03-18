@@ -161,9 +161,13 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             for (auto& event_fd : per_thread_event_fds_) {
                 event_fd = CreateEventFd();
             }
-            thread_sleeping_ = std::make_unique<std::atomic<bool>[]>(config_.worker_threads);
+            thread_spinning_ = std::make_unique<std::atomic<bool>[]>(config_.worker_threads);
             for (size_t i = 0; i < config_.worker_threads; ++i) {
-                thread_sleeping_[i].store(false, std::memory_order_relaxed);
+                thread_spinning_[i].store(false, std::memory_order_relaxed);
+            }
+            thread_sleep_start_time_ = std::make_unique<std::atomic<std::chrono::steady_clock::time_point>[]>(config_.worker_threads);
+            for (size_t i = 0; i < config_.worker_threads; ++i) {
+                thread_sleep_start_time_[i].store(std::chrono::steady_clock::time_point{}, std::memory_order_relaxed);
             }
         }
 #endif  // __linux__
@@ -690,26 +694,83 @@ void TaskProcessor::WakeupEventLoop() {
         }
         return;
     }
+
+    // 1. Check for spinning threads first
+    // 2. If no spinning threads, check for sleeping threads
+    // 3. If no sleeping threads, check for least-recently-woken
     
-    // Get the next candidate thread
-    size_t start_index = next_thread_to_wake_.fetch_add(1, std::memory_order_relaxed) % thread_count;
-    
-    bool found_sleeping = false;
-    
-    // First attempt: try to find a sleeping thread
+    // Add a spinning flag for each thread
+    static thread_local std::vector<std::atomic<bool>> thread_spinning_;
+    if (thread_spinning_.size() != thread_count) {
+        thread_spinning_.resize(thread_count);
+        for (size_t i = 0; i < thread_count; ++i) {
+            thread_spinning_[i].store(false, std::memory_order_relaxed);
+        }
+    }
+
+    // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
-        const size_t idx = (start_index + i) % thread_count;
-        if (thread_sleeping_[idx].load(std::memory_order_acquire)) {
-            WakeupEventLoopThread(idx);
-            found_sleeping = true;
+        if (thread_spinning_[i].load(std::memory_order_acquire)) {
+            WakeupEventLoopThread(i);
+            return;
+        }
+    }
+
+    // Second pass: Find a sleeping thread with valid timestamp
+    size_t best_thread_idx = SIZE_MAX;
+    std::chrono::steady_clock::time_point longest_sleep_time{};
+    
+    for (size_t i = 0; i < thread_count; ++i) {
+        if (thread_sleeping_[i].load(std::memory_order_acquire)) {
+            auto sleep_start = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+            
+            // Skip threads with uninitialized timestamps
+            if (sleep_start == std::chrono::steady_clock::time_point{}) {
+                continue;
+            }
+            
+            // Select the thread that has been sleeping the longest
+            if (best_thread_idx == SIZE_MAX || sleep_start < longest_sleep_time) {
+                best_thread_idx = i;
+                longest_sleep_time = sleep_start;
+            }
+        }
+    }
+
+    // If we found a suitable sleeping thread, wake it up
+    if (best_thread_idx != SIZE_MAX) {
+        WakeupEventLoopThread(best_thread_idx);
+        return;
+    }
+
+    // No spinning or sleeping threads found
+    // Track last wakeup time to avoid repeatedly waking up the same thread
+    static thread_local std::vector<std::chrono::steady_clock::time_point> last_wakeup_times;
+    if (last_wakeup_times.size() != thread_count) {
+        last_wakeup_times.resize(thread_count);
+    }
+    
+    // Find the thread that was woken up least recently
+    size_t least_recent_idx = 0;
+    auto now = std::chrono::steady_clock::now();
+    auto least_recent_time = now;
+    
+    for (size_t i = 0; i < thread_count; ++i) {
+        auto last_wakeup = last_wakeup_times[i];
+        // Skip uninitialized timestamps
+        if (last_wakeup == std::chrono::steady_clock::time_point{}) {
+            least_recent_idx = i;
             break;
+        }
+        
+        if (last_wakeup < least_recent_time) {
+            least_recent_idx = i;
+            least_recent_time = last_wakeup;
         }
     }
     
-    // If no sleeping thread was found, wake up the start_index thread
-    if (!found_sleeping) {
-        WakeupEventLoopThread(start_index);
-    }
+    WakeupEventLoopThread(least_recent_idx);
+    last_wakeup_times[least_recent_idx] = now;
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
@@ -730,7 +791,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
     }
 
     auto& queue = std::get<TaskQueue>(task_queue_);
-    constexpr std::size_t kMaxEvents{512};
+    constexpr std::size_t kMaxEvents{256};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_) {
@@ -781,10 +842,15 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 
         if (is_shutting_down_) break;
 
-        thread_sleeping_[thread_index].store(true, std::memory_order_release);
+        // Perform spinning before epoll_wait
+        if (SpinBeforeEpollWait(thread_index)) {
+            continue; // Skip epoll_wait if task was found during spin
+        }
+
+        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now(), std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        thread_sleeping_[thread_index].store(false, std::memory_order_release);
+        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::time_point{}, std::memory_order_release);
         if (is_shutting_down_) break;
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -851,6 +917,30 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
             }
         }
     }
+}
+
+bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
+    const auto spin_count = config_.spinning_iterations;
+    auto& queue = std::get<TaskQueue>(task_queue_);
+    bool task_found_during_spin = false;
+
+    thread_spinning_[thread_index].store(true, std::memory_order_relaxed);
+    for (size_t i = 0; i < spin_count; ++i) {
+        if (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr.value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
+            }
+            queue.Push(std::move(context_ptr.value()));
+            task_found_during_spin = true;
+            break; // Task found, exit spinning
+        }
+        std::this_thread::yield(); // Relax the CPU
+    }
+    thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
+
+    return task_found_during_spin || is_shutting_down_;
 }
 #endif  // __linux__
 
