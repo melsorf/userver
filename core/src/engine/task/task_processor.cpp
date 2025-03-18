@@ -862,6 +862,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
                 }
             }
             if (callback_copy) {
+                auto event_mask = events[i].events;
                 uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (filtered_events) {
                     try {
