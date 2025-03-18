@@ -705,6 +705,7 @@ void TaskProcessor::WakeupEventLoop() {
 
     // 1. Check for spinning threads first
     // 2. If no spinning threads, check for sleeping threads
+    // 3. Wake up a random thread
 
     // First pass: Find a spinning thread
     for (size_t i = 0; i < thread_count; ++i) {
@@ -738,6 +739,9 @@ void TaskProcessor::WakeupEventLoop() {
         WakeupEventLoopThread(best_thread_idx);
         return;
     }
+
+    // Otherwise wake up a random thread
+    WakeupEventLoopThread(utils::RandomIndex(thread_count));
 }
 
 void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
