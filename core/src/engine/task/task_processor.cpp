@@ -887,7 +887,7 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
 }
 
 bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
-    const auto spin_count = config_.spinning_iterations / 4;
+    const auto spin_count = config_.spinning_iterations / 5;
     auto& queue = std::get<TaskQueue>(task_queue_);
     bool task_found_during_spin = false;
 
@@ -896,13 +896,7 @@ bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
         thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
     });
     for (int i = 0; i < spin_count; ++i) {
-        if (auto context_ptr = queue.PopNonBlocking()) {
-            if (!context_ptr.value()) {
-                // "Stop" token
-                is_shutting_down_ = true;
-                break;
-            }
-            queue.Push(std::move(context_ptr.value()));
+        if (queue.GetSizeApproximate() > 0) {
             task_found_during_spin = true;
             break; // Task found, exit spinning
         }
