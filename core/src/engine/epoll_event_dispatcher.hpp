@@ -16,6 +16,7 @@
 #include <vector>
 #include <queue>
 #include <utility>
+#include <map>
 
 #include <userver/logging/log.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
