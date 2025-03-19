@@ -21,6 +21,7 @@
 #include <userver/logging/log.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_queue.hpp>
 
 USERVER_NAMESPACE_BEGIN
 

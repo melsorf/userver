@@ -147,7 +147,7 @@ void EpollEventDispatcher::UpdateTimerFd() {
 bool EpollEventDispatcher::ScheduleTimer(std::chrono::steady_clock::duration delay, std::function<void()> callback) {
     if (timer_fd_ < 0) return false;
 
-    auto deadline = std::chrono::steady_lock::now() + delay;
+    auto deadline = std::chrono::steady_clock::now() + delay;
     {
         std::lock_guard<std::mutex> lock(timers_mutex_);
         timers_.emplace(deadline, std::move(callback));
