@@ -29,6 +29,8 @@ public:
 
     void PrepareWorker(std::size_t index);
 
+    std::optional<boost::intrusive_ptr<impl::TaskContext>> PopNonBlocking();
+
 private:
     void DoPush(impl::TaskContext* context);
 

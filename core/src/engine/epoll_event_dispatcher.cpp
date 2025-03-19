@@ -7,6 +7,9 @@
 #include <fcntl.h>
 #include <map>
 #include <chrono>
+#include <queue>
+#include <functional>
+#include <mutex>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>

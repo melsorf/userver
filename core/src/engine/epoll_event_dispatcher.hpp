@@ -39,6 +39,8 @@ public:
 
     // Posts an event to wake up a thread for task processing
     void PostEvent();
+
+    void PostTask(std::function<void()> task);
     
     // Schedule a timer event
     bool ScheduleTimer(std::chrono::steady_clock::duration delay, 
