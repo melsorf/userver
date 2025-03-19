@@ -132,6 +132,9 @@ void FillIoSendData(const IoData* data, struct iovec* dst, std::size_t count) {
 Socket::Socket(AddrDomain domain, SocketType type) : domain_(domain), fd_control_(MakeSocket(domain, type)) {
     SetReadableContextAccessor(fd_control_->Read().TryGetContextAccessor());
     SetWritableContextAccessor(fd_control_->Write().TryGetContextAccessor());
+#ifdef __linux__
+    RegisterWithEpoll();
+#endif
 }
 
 Socket::Socket(int fd, AddrDomain domain) : domain_(domain), fd_control_(impl::FdControl::Adopt(fd)) {
@@ -149,6 +152,9 @@ Socket::Socket(int fd, AddrDomain domain) : domain_(domain), fd_control_(impl::F
             ));
         }
     }
+#endif
+#ifdef __linux__
+    RegisterWithEpoll();
 #endif
 }
 
@@ -457,13 +463,21 @@ const Sockaddr& Socket::Getsockname() {
 int Socket::Release() && noexcept {
     const int fd = Fd();
     if (IsValid()) {
+#ifdef __linux__
+        UnregisterFromEpoll();
+#endif
         fd_control_->Invalidate();
         fd_control_.reset();
     }
     return fd;
 }
 
-void Socket::Close() { fd_control_.reset(); }
+void Socket::Close() { 
+#ifdef __linux__
+    UnregisterFromEpoll();
+#endif
+    fd_control_.reset(); 
+}
 
 int Socket::GetOption(int layer, int optname) const {
     UASSERT(IsValid());
@@ -492,6 +506,47 @@ void Socket::SetOption(int layer, int optname, int optval) {
         Fd()
     );
 }
+
+#ifdef __linux__
+void Socket::RegisterWithEpoll() {
+    if (!IsValid()) return;
+    
+    try {
+        auto& task_processor = engine::current_task::GetTaskProcessor();
+        epoll_thread_id_ = task_processor.RegisterFd(
+            Fd(),
+            EPOLLIN | EPOLLOUT,
+            [this](uint32_t events) {
+                // When an event occurs, wake up any waiting tasks
+                if (events & EPOLLIN) {
+                    fd_control_->Read().WakeupWaiters();
+                }
+                if (events & EPOLLOUT) {
+                    fd_control_->Write().WakeupWaiters();
+                }
+                if (events & (EPOLLERR | EPOLLHUP)) {
+                    // Wake up both readers and writers on error
+                    fd_control_->Read().WakeupWaiters();
+                    fd_control_->Write().WakeupWaiters();
+                }
+            });
+    } catch (const std::exception& ex) {
+        LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
+    }
+}
+
+void Socket::UnregisterFromEpoll() {
+    if (!IsValid()) return;
+    
+    try {
+        auto& task_processor = engine::current_task::GetTaskProcessor();
+        task_processor.UnregisterFd(Fd());
+        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    } catch (const std::exception& ex) {
+        LOG_DEBUG() << "Failed to unregister socket from epoll: " << ex.what();
+    }
+}
+#endif
 
 }  // namespace engine::io
 

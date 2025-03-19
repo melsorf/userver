@@ -185,6 +185,13 @@ private:
     impl::FdControlHolder fd_control_;
     Sockaddr peername_;
     Sockaddr sockname_;
+
+#ifdef __linux__
+    // Register this socket with the epoll-based event dispatcher
+    void RegisterWithEpoll();
+    // Unregister this socket from the epoll-based event dispatcher
+    void UnregisterFromEpoll();
+#endif
 };
 
 }  // namespace engine::io

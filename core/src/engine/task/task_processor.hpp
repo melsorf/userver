@@ -19,6 +19,8 @@
 #include <userver/logging/logger.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
+#include <engine/epoll_event_dispatcher.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {
@@ -126,6 +128,14 @@ private:
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
+
+#ifdef __linux__
+    bool use_epoll_mode_{true};
+    std::unique_ptr<EpollEventDispatcher> epoll_ev_dispatcher_;
+    void RunEventLoop(std::size_t thread_index) noexcept;
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+    void UnregisterFd(int fd);
+#endif
 };
 
 /// Register a function that runs on all threads on task processor creation.

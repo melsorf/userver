@@ -102,6 +102,12 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
       pools_(std::move(pools)) {
     utils::impl::FinishStaticRegistration();
     try {
+#ifdef __linux__
+        // use_epoll_mode_ = config_.use_epoll_mode; TODO
+        if (use_epoll_mode_) {
+            epoll_ev_dispatcher_ = std::make_unique<EpollEventDispatcher>(config_.worker_threads);
+        }
+#endif
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
@@ -110,7 +116,15 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
+#ifdef __linux__
+                if (use_epoll_mode_ && epoll_ev_dispatcher_) {
+                    RunEventLoop(i);
+                } else {
+                    ProcessTasks();
+                }
+#else
                 ProcessTasks();
+#endif
                 FinalizeWorkerThread();
             });
         }
@@ -142,6 +156,11 @@ void TaskProcessor::Cleanup() noexcept {
 
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
+#ifdef __linux__
+    if (use_epoll_mode_ && epoll_ev_dispatcher_) {
+        epoll_ev_dispatcher_->Shutdown();
+    }
+#endif
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
 
@@ -166,6 +185,12 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     SetTaskQueueWaitTimepoint(context);
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
+#ifdef __linux__
+    // Post event to epoll queue
+    if (use_epoll_mode_ && epoll_ev_dispatcher_) {
+        epoll_ev_dispatcher_->PostEvent();
+    }
+#endif
 }
 
 void TaskProcessor::Adopt(impl::TaskContext& context) { detached_contexts_->Add(context); }
@@ -430,6 +455,35 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
     }
     return new_overload_by_length;
 }
+
+#ifdef __linux__
+std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+    if (std::holds_alternative<TaskQueue>(task_queue_)) {
+        if (epoll_ev_dispatcher_) {
+            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback));
+        }
+    }
+    return std::numeric_limits<std::size_t>::max();
+}
+    
+void TaskProcessor::UnregisterFd(int fd) {
+    if (std::holds_alternative<TaskQueue>(task_queue_)) {
+        if (epoll_ev_dispatcher_) {
+            epoll_ev_dispatcher_->UnregisterFd(fd);
+        }
+    }
+}
+
+void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
+    // Only use epoll when the underlying queue is TaskQueue.
+    if (std::holds_alternative<TaskQueue>(task_queue_)) {
+        auto& queue = std::get<TaskQueue>(task_queue_);
+        epoll_ev_dispatcher_->ProcessEvents(thread_index, queue);
+    } else {
+        ProcessTasks();
+    }
+}
+#endif
 
 }  // namespace engine
 
