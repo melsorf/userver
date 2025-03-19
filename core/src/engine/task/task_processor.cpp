@@ -795,26 +795,6 @@ void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
         }
 
         if (is_shutting_down_) break;
-        
-        // Check again for tasks before going to epoll_wait
-        {
-            auto context_ptr = queue.PopNonBlocking();
-            if (context_ptr.has_value()) {
-                if (!context_ptr.value()) {
-                    // "Stop" token
-                    is_shutting_down_ = true;
-                    break;
-                }
-                
-                // Put it back and continue processing from the top
-                if (context_ptr.value()) {
-                    queue.Push(std::move(context_ptr.value()));
-                }
-                continue;
-            }
-        }
-
-        if (is_shutting_down_) break;
 
         // Perform spinning before epoll_wait
         if (SpinBeforeEpollWait(thread_index)) {
