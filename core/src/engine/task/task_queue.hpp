@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <moodycamel/blockingconcurrentqueue.h>
 #include <moodycamel/lightweightsemaphore.h>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -22,6 +24,7 @@ public:
 
     // Returns nullptr as a stop signal
     boost::intrusive_ptr<impl::TaskContext> PopBlocking();
+    std::optional<boost::intrusive_ptr<impl::TaskContext>> PopNonBlocking();
 
     void StopProcessing();
 

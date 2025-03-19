@@ -29,6 +29,10 @@ class TaskProcessorPools;
 class CountedCoroutinePtr;
 }  // namespace impl
 
+namespace current_task {
+    TaskProcessor* GetTaskProcessorUnchecked() noexcept;
+} 
+
 namespace ev {
 class ThreadPool;
 }  // namespace ev
@@ -76,6 +80,19 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+#ifdef __linux__
+    bool UseEvThreadPool() const { return use_ev_thread_pool_; }
+
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+
+    void UnregisterFd(int fd);
+    
+    void WakeupEventLoop();
+    void WakeupEventLoopThread(std::size_t thread_index) const;
+
+    bool SpinBeforeEpollWait(std::size_t thread_index);
+#endif // __linux__
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -87,7 +104,7 @@ private:
 
     void Cleanup() noexcept;
 
-    void PrepareWorkerThread(std::size_t index) noexcept;
+    void PrepareWorkerThread(std::size_t index);
 
     void FinalizeWorkerThread() noexcept;
 
@@ -101,11 +118,16 @@ private:
 
     OverloadByLength GetOverloadByLength(std::size_t max_queue_length) noexcept;
 
-    OverloadByLength
-    ComputeOverloadByLength(OverloadByLength old_overload_by_length, std::size_t max_queue_length) noexcept;
+    OverloadByLength ComputeOverloadByLength(OverloadByLength old_overload_by_length, std::size_t max_queue_length)
+        noexcept;
+
+#ifdef __linux__
+    void RunEventLoop(std::size_t index);
+#endif  // __linux__
 
     concurrent::impl::InterferenceShield<impl::DetachedTasksSyncBlock> detached_contexts_{
-        impl::DetachedTasksSyncBlock::StopMode::kCancel};
+        impl::DetachedTasksSyncBlock::StopMode::kCancel
+    };
     concurrent::impl::InterferenceShield<OverloadedCache> overloaded_cache_;
     std::variant<TaskQueue, WorkStealingTaskQueue> task_queue_;
     impl::TaskCounter task_counter_;
@@ -126,6 +148,19 @@ private:
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
+
+#ifdef __linux__
+    bool use_ev_thread_pool_{false};
+    std::mutex epoll_mtx_;
+    std::unordered_map<int, std::function<void(uint32_t)>> fd_callbacks_;
+    std::vector<int> per_thread_epoll_fds_;
+    std::vector<int> per_thread_event_fds_;
+    std::unordered_map<int, std::size_t> fd_to_thread_index_;
+    std::mutex fd_map_mtx_;
+
+    std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
+    std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
+#endif  // __linux__
 };
 
 /// Register a function that runs on all threads on task processor creation.

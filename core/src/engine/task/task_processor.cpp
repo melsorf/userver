@@ -1,11 +1,17 @@
 #include "task_processor.hpp"
 
+#ifdef __linux__
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#endif  // __linux__
+
 #include <sys/types.h>
 #include <csignal>
 
 #include <fmt/format.h>
 
 #include <concurrent/impl/latch.hpp>
+#include <userver/compiler/thread_local.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 #include <userver/utils/impl/static_registration.hpp>
@@ -13,10 +19,12 @@
 #include <userver/utils/rand.hpp>
 #include <userver/utils/thread_name.hpp>
 #include <userver/utils/threads.hpp>
+#include <userver/utils/traceful_exception.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
 #include <engine/task/counted_coroutine_ptr.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_counter.hpp>
 #include <engine/task/task_processor_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -93,24 +101,93 @@ auto MakeTaskQueue(TaskProcessorConfig config) {
     UINVARIANT(false, "Unexpected value of TaskQueueType enum");
 }
 
+bool PlatformSupportsEpollet() {
+#ifdef __linux__
+    return true;
+#else   // __linux__
+    return false;
+#endif  // __linux__
+}
+
+#ifdef __linux__
+int CreateEpollFd() {
+    int fd = epoll_create1(0);
+    if (fd == -1) {
+        throw utils::TracefulException("Failed to create epoll instance");
+    }
+    return fd;
+}
+
+int CreateEventFd() {
+    int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fd == -1) {
+        throw utils::TracefulException("Failed to create eventfd");
+    }
+    return fd;
+}
+#endif  // __linux__
+
 }  // namespace
+
+
+namespace current_task {
+    TaskProcessor* GetTaskProcessorUnchecked() noexcept {
+        auto* context = GetCurrentTaskContextUnchecked();
+        if (!context) return nullptr;
+        return &context->GetTaskProcessor();
+    }
+}
 
 TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::TaskProcessorPools> pools)
     : task_queue_(MakeTaskQueue(config)),
-      task_counter_(config.worker_threads),
-      config_(std::move(config)),
-      pools_(std::move(pools)) {
+    task_counter_(config.worker_threads),
+    config_(std::move(config)),
+    pools_(std::move(pools))
+{
     utils::impl::FinishStaticRegistration();
+
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
+
+#ifdef __linux__
+        use_ev_thread_pool_ = !PlatformSupportsEpollet();
+        if (!UseEvThreadPool()) {
+            per_thread_epoll_fds_.resize(config_.worker_threads);
+            per_thread_event_fds_.resize(config_.worker_threads, -1);
+            for (auto& epoll_fd : per_thread_epoll_fds_) {
+                epoll_fd = CreateEpollFd();
+            }
+            for (auto& event_fd : per_thread_event_fds_) {
+                event_fd = CreateEventFd();
+            }
+            thread_spinning_ = std::make_unique<std::atomic<bool>[]>(config_.worker_threads);
+            for (size_t i = 0; i < config_.worker_threads; ++i) {
+                thread_spinning_[i].store(false, std::memory_order_relaxed);
+            }
+            thread_sleep_start_time_ = std::make_unique<std::atomic<uint64_t>[]>(config_.worker_threads);
+            for (size_t i = 0; i < config_.worker_threads; ++i) {
+                thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
+            }
+        }
+#endif  // __linux__
+
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
+
+#ifdef __linux__
+                if (UseEvThreadPool()) {
+                    ProcessTasks();
+                } else {
+                    RunEventLoop(i);
+                }
+#else   // __linux__
                 ProcessTasks();
+#endif  // __linux__
                 FinalizeWorkerThread();
             });
         }
@@ -136,12 +213,24 @@ void TaskProcessor::Cleanup() noexcept {
     for (auto& w : workers_) {
         w.join();
     }
-
+#ifdef __linux__
+    if (!UseEvThreadPool()) {
+        for (auto ep : per_thread_epoll_fds_) {
+            if (ep >= 0) ::close(ep);
+        }
+        for (auto event_fd : per_thread_event_fds_) {
+            if (event_fd >= 0) ::close(event_fd);
+        }
+    }
+#endif
     UASSERT(!task_counter_.MayHaveTasksAlive());
 }
 
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
+#ifdef __linux__
+    WakeupEventLoop();
+#endif  // __linux__
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
 
@@ -161,11 +250,19 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
             HandleOverload(*context, action);
         }
     }
-    if (is_shutting_down_) context->RequestCancel(TaskCancellationReason::kShutdown);
-
+    if (is_shutting_down_) {
+        context->RequestCancel(TaskCancellationReason::kShutdown);
+#ifdef __linux__
+        if (!UseEvThreadPool()) WakeupEventLoop();
+#endif  // __linux__
+    }
     SetTaskQueueWaitTimepoint(context);
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
+
+#ifdef __linux__
+    WakeupEventLoop();
+#endif  // __linux__
 }
 
 void TaskProcessor::Adopt(impl::TaskContext& context) { detached_contexts_->Add(context); }
@@ -272,7 +369,7 @@ void RegisterThreadStartedHook(std::function<void()> func) {
     ThreadStartedHooks().push_back(std::move(func));
 }
 
-void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
+void TaskProcessor::PrepareWorkerThread(std::size_t index) {
     switch (config_.os_scheduling) {
         case OsScheduling::kNormal:
             break;
@@ -295,6 +392,29 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
     pools_->GetCoroPool().RegisterThread();
 
     TaskProcessorThreadStartedHook();
+
+#ifdef __linux__
+    // Add event_fd to the epoll
+    if (!UseEvThreadPool() && index < per_thread_epoll_fds_.size()) {
+        const int epoll_fd = per_thread_epoll_fds_[index];
+        if (epoll_fd >= 0 && index < per_thread_event_fds_.size() && per_thread_event_fds_[index] >= 0) {
+            struct epoll_event ev;
+            ev.events = EPOLLIN;
+            ev.data.fd = per_thread_event_fds_[index];
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, per_thread_event_fds_[index], &ev) == -1) {
+                throw utils::TracefulException("Failed to add event_fd to epoll");
+            }
+
+            int flags = fcntl(per_thread_event_fds_[index], F_GETFL, 0);
+            if (flags == -1) {
+                throw utils::TracefulException("Failed to get event_fd flags");
+            }
+            if (fcntl(per_thread_event_fds_[index], F_SETFL, flags | O_NONBLOCK) == -1) {
+                throw utils::TracefulException("Failed to set event_fd to non-blocking mode");
+            }
+        }
+    }
+#endif
 }
 
 void TaskProcessor::FinalizeWorkerThread() noexcept { pools_->GetCoroPool().ClearLocalCache(); }
@@ -430,6 +550,354 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
     }
     return new_overload_by_length;
 }
+
+#ifdef __linux__
+std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+    if (fd < 0) return std::numeric_limits<std::size_t>::max();
+    if (UseEvThreadPool()) return 0;
+    if (per_thread_epoll_fds_.empty()) {
+        LOG_WARNING() << "RegisterFd called but per_thread_epoll_fds_ is empty";
+        return std::numeric_limits<std::size_t>::max();
+    }
+    
+    std::size_t index;
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        auto existing_it = fd_to_thread_index_.find(fd);
+        if (existing_it != fd_to_thread_index_.end()) {
+            index = existing_it->second;
+        } else {
+            // Distribute descriptors evenly among threads
+            index = utils::RandRange(per_thread_epoll_fds_.size());
+            fd_to_thread_index_[fd] = index;
+        }
+    }
+
+    struct epoll_event ev;
+    ev.events = events | EPOLLET;
+    ev.data.fd = fd;
+
+    bool registration_successful = false;
+    {
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
+        int epoll_fd = per_thread_epoll_fds_[index];
+        int op = EPOLL_CTL_ADD;
+
+        bool has_existing = fd_callbacks_.find(fd) != fd_callbacks_.end();
+        if (has_existing) {
+            op = EPOLL_CTL_MOD;
+        }
+        
+        int result = epoll_ctl(epoll_fd, op, fd, &ev);
+        if (result == -1) {
+            if (errno == EEXIST && op == EPOLL_CTL_ADD) {
+                result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            }
+            
+            if (result == -1) {
+                LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
+                    << " fd " << fd << " to per-thread epoll: " << strerror(errno);
+            } else {
+                registration_successful = true;
+            }
+        } else {
+            registration_successful = true;
+        }
+
+        if (registration_successful) {
+            fd_callbacks_[fd] = std::move(callback);
+        }
+    }
+
+    if (!registration_successful) {
+        // Remove fd from map if registration fails
+        std::lock_guard<std::mutex> idx_lock(fd_map_mtx_);
+        fd_to_thread_index_.erase(fd);
+        return std::numeric_limits<std::size_t>::max();
+    }
+    
+    return index;
+}
+
+void TaskProcessor::UnregisterFd(int fd) {
+    if (UseEvThreadPool()) return;
+
+    std::size_t index;
+    bool found = false;
+
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mtx_);
+        auto it = fd_to_thread_index_.find(fd);
+        if (it != fd_to_thread_index_.end()) {
+            index = it->second;
+            fd_to_thread_index_.erase(it);
+            found = true;
+        }
+    }
+
+    if (!found) {
+        LOG_DEBUG() << "Attempt to unregister fd " << fd << " that is not in the map";
+        return;
+    }
+
+    if (index >= per_thread_epoll_fds_.size()) {
+        LOG_ERROR() << "Invalid thread index " << index << " for fd " << fd 
+            << ", max index is " << (per_thread_epoll_fds_.size() - 1);
+        return;
+    } 
+
+    bool need_wakeup = false;
+
+    {
+        std::lock_guard<std::mutex> lock(epoll_mtx_);
+        int epoll_fd = per_thread_epoll_fds_[index];
+
+        auto callback_it = fd_callbacks_.find(fd);
+        if (callback_it != fd_callbacks_.end()) {
+            fd_callbacks_.erase(callback_it);
+            need_wakeup = true;
+        }
+
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+            if (errno != ENOENT && errno != EBADF) {
+                LOG_ERROR() << "Failed to remove fd " << fd  << " from per-thread epoll: " << strerror(errno);
+            }
+        }
+    }
+
+    if (need_wakeup) {
+        WakeupEventLoopThread(index);
+    }
+}
+
+void TaskProcessor::WakeupEventLoopThread(std::size_t thread_index) const {
+    if (UseEvThreadPool() || thread_index >= per_thread_event_fds_.size()) return;
+    
+    const int event_fd = per_thread_event_fds_[thread_index];
+    if (event_fd < 0) return;
+
+    uint64_t expected_sleep_time = thread_sleep_start_time_[thread_index].load(std::memory_order_acquire);
+    if (expected_sleep_time != 0) {
+        thread_sleep_start_time_[thread_index].compare_exchange_strong(expected_sleep_time, 0, std::memory_order_acq_rel);
+    }
+    
+    uint64_t value = 1;
+    ssize_t ret;
+    do {
+        ret = write(event_fd, &value, sizeof(value));
+    } while (ret == -1 && errno == EINTR);
+    
+    if (ret != sizeof(value)) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            LOG_ERROR() << "Failed to write to event_fd " << event_fd 
+                << " (thread " << thread_index << "): " << strerror(errno);
+        }
+    }
+}
+
+void TaskProcessor::WakeupEventLoop() {
+    if (UseEvThreadPool()) return;
+    
+    size_t thread_count = config_.worker_threads;
+    if (thread_count == 0) return;
+
+    // In shutdown case, wake up all threads to ensure clean shutdown
+    if (is_shutting_down_) {
+        for (size_t i = 0; i < thread_count; ++i) {
+            WakeupEventLoopThread(i);
+        }
+        return;
+    }
+
+    // 1. Check for spinning threads first
+    // 2. If no spinning threads, check for sleeping threads
+    // 3. If no sleeping threads, check for least-recently-woken
+
+    // First pass: Find a spinning thread
+    for (size_t i = 0; i < thread_count; ++i) {
+        bool expected = true;
+        if (thread_spinning_[i].compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+            WakeupEventLoopThread(i);
+            return;
+        }
+    }
+
+    // Second pass: Find a sleeping thread with valid timestamp
+    
+    for (size_t i = 0; i < thread_count; ++i) {
+        auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+        
+        // Skip threads with uninitialized timestamps
+        if (sleep_timestamp == 0) {
+            continue;
+        }
+        
+        if (thread_sleep_start_time_[i].compare_exchange_strong(
+            sleep_timestamp, 0, std::memory_order_acq_rel)) {
+            WakeupEventLoopThread(i);
+            return;
+        }
+    }
+
+    // No spinning or sleeping threads found
+    // Use a random approach
+    static std::atomic<size_t> next_thread_index{0};
+    size_t thread_index = next_thread_index.fetch_add(1, std::memory_order_relaxed) % thread_count;
+    
+    WakeupEventLoopThread(thread_index);
+}
+
+void TaskProcessor::RunEventLoop(const std::size_t thread_index) {
+    const int epoll_fd = per_thread_epoll_fds_[thread_index];
+    const int event_fd = per_thread_event_fds_[thread_index];
+    
+    if (epoll_fd < 0 || event_fd < 0) {
+        LOG_ERROR() << "Invalid epoll or event fd for thread " << thread_index;
+        // fallback: just do tasks
+        ProcessTasks();
+        return;
+    }
+
+    if (std::holds_alternative<WorkStealingTaskQueue>(task_queue_)) {
+        LOG_ERROR() << "RunEventLoop called with WorkStealingTaskQueue, falling back to ProcessTasks";
+        ProcessTasks();
+        return;
+    }
+
+    auto& queue = std::get<TaskQueue>(task_queue_);
+    constexpr std::size_t kMaxEvents{256};
+    struct epoll_event events[kMaxEvents];
+
+    while (!is_shutting_down_) {
+        while (auto context_ptr = queue.PopNonBlocking()) {
+            if (!context_ptr.has_value()) {
+                // "Stop" token
+                is_shutting_down_ = true;
+                break;
+            }
+            if (!context_ptr.value()) continue;
+            
+            auto context = context_ptr.value();
+            bool has_failed = false;
+            CheckWaitTime(*context);
+
+            try {
+                impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+                context->DoStep();
+            } catch (...) {
+                LOG_ERROR() << "unhandled exception from DoStep()";
+                has_failed = true;
+            }
+            pools_->GetCoroPool().AccountStackUsage();
+            if (has_failed || context->IsFinished()) {
+                context->FinishDetached();
+            }
+        }
+
+        if (is_shutting_down_) break;
+
+        // Perform spinning before epoll_wait
+        if (SpinBeforeEpollWait(thread_index)) {
+            continue; // Skip epoll_wait if task was found during spin
+        }
+
+        thread_sleep_start_time_[thread_index].store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+        // Double-check if any tasks appeared before we sleep
+        if (queue.GetSizeApproximate() > 0 || is_shutting_down_) {
+            thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
+            continue;  // Skip epoll_wait and go back to processing tasks
+        }
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
+        if (is_shutting_down_) break;
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
+            break;
+        }
+
+        for (int i = 0; i < ready && !is_shutting_down_; ++i) {
+            const auto fd = events[i].data.fd;
+            if (fd == event_fd) {
+                // Drain the event_fd
+                uint64_t buffer;
+                ssize_t ret;
+                do {
+                    ret = read(event_fd, &buffer, sizeof(buffer));
+                } while (ret > 0);
+                
+                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    LOG_ERROR() << "Failed to read from event_fd: " << strerror(errno);
+                }
+                continue; // Continue to next event
+            }
+            // Handle regular file descriptor events
+            std::function<void(uint32_t)> callback_copy;
+            {
+                std::unique_lock<std::mutex> lock(epoll_mtx_);
+                auto it = fd_callbacks_.find(fd);
+                if (it != fd_callbacks_.end()) {
+                    callback_copy = it->second;
+                }
+            }
+            if (callback_copy) {
+                auto event_mask = events[i].events;
+                uint32_t filtered_events = event_mask & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                if (filtered_events) {
+                    try {
+                        callback_copy(filtered_events);
+                    } catch (const std::exception& ex) {
+                        LOG_ERROR() << "Exception in fd callback: " << ex;
+                    } catch (...) {
+                        LOG_ERROR() << "Unknown exception in fd callback";
+                    }
+                }
+
+                // Don't try to rearm if EPOLLHUP or EPOLLERR were signaled
+                // as the file descriptor may no longer be valid
+                if (!(event_mask & (EPOLLHUP | EPOLLERR))) {
+                    std::unique_lock<std::mutex> lock(epoll_mtx_);
+                    // Check if callback is still registered (could've been removed during execution)
+                    auto it = fd_callbacks_.find(fd);
+                    if (it != fd_callbacks_.end()) {
+                        struct epoll_event ev;
+                        ev.events = (EPOLLIN | EPOLLOUT | EPOLLET);
+                        ev.data.fd = fd;
+                        if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+                            if (errno != EBADF && errno != ENOENT) {
+                                LOG_ERROR() << "Failed to rearm fd " << fd << ": " << strerror(errno);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // File descriptor registered but no callback found
+                LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
+            }
+        }
+    }
+}
+
+bool TaskProcessor::SpinBeforeEpollWait(std::size_t thread_index) {
+    const auto spin_count = config_.spinning_iterations / 5;
+    auto& queue = std::get<TaskQueue>(task_queue_);
+    bool task_found_during_spin = false;
+
+    thread_spinning_[thread_index].store(true, std::memory_order_release);
+    utils::FastScopeGuard spinning_guard([&] () noexcept {
+        thread_spinning_[thread_index].store(false, std::memory_order_release);
+    });
+    for (int i = 0; i < spin_count; ++i) {
+        if (queue.GetSizeApproximate() > 0) {
+            task_found_during_spin = true;
+            break; // Task found, exit spinning
+        }
+        std::this_thread::yield(); // Relax the CPU
+    }
+    return task_found_during_spin || is_shutting_down_;
+}
+#endif  // __linux__
 
 }  // namespace engine
 

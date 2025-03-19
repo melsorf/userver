@@ -11,6 +11,7 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <memory>
 
 #include <userver/engine/io/fd_poller.hpp>
 #include <userver/logging/fwd.hpp>
@@ -59,7 +60,7 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 
 /// @brief File descriptor that allows one to monitor filesystem events, such as
 /// file creation, modification, etc.
-class Inotify final {
+class Inotify final : public std::enable_shared_from_this<Inotify> {
 public:
     Inotify();
 
@@ -87,8 +88,11 @@ public:
 
 private:
     void Dispatch();
+    void InitializeEpollIfNeeded();
 
     FdPoller fd_;
+    bool use_ev_thread_pool_;
+    bool epoll_initialized_{false};
     std::queue<Event> pending_events_;
     std::unordered_map<std::string, int> path_to_wd_;
     std::unordered_map<int, std::string> wd_to_path_;

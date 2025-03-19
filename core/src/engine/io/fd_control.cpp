@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include <userver/engine/exception.hpp>
 #include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -78,22 +79,20 @@ FdControlHolder FdControl::Adopt(int fd) {
     SetNonblock(fd);
     ReduceSigpipe(fd);
     fd_control->read_.Reset(fd, Direction::Kind::kRead);
-    fd_control->write_.Reset(fd, Direction::Kind::kWrite);
+    fd_control->write_.ResetWithoutRegistration(fd, Direction::Kind::kWrite);
     return fd_control;
 }
 
 void FdControl::Close() {
     if (!IsValid()) return;
-    Invalidate();
-
     const auto fd = Fd();
+    Invalidate();
     if (::close(fd) == -1) {
         const auto error_code = errno;
         std::error_code ec(error_code, std::system_category());
         UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
         LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
     }
-
     read_.WakeupWaiters();
     write_.WakeupWaiters();
 }

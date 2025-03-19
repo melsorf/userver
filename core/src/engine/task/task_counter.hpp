@@ -67,6 +67,8 @@ public:
 
     Rate GetTasksStartedRunning() const noexcept;
 
+    std::size_t GetLocalTaskThreadId() const noexcept;
+
     std::uint64_t GetRunningTasks() const noexcept;
 
     void AccountTaskCancel() noexcept;

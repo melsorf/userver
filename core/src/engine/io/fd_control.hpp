@@ -107,6 +107,8 @@ private:
 
     void Reset(int fd, Kind kind) { poller_.Reset(fd, kind); }
 
+    void ResetWithoutRegistration(int fd, Kind kind) { poller_.Reset(fd, kind, false); }
+
     void WakeupWaiters() { poller_.WakeupWaiters(); }
 
     // does not notify

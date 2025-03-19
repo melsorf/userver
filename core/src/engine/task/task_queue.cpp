@@ -36,6 +36,22 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopBlocking() {
     return context;
 }
 
+std::optional<boost::intrusive_ptr<impl::TaskContext>> TaskQueue::PopNonBlocking() {
+    thread_local moodycamel::ConsumerToken token(queue_);
+    impl::TaskContext* raw_context = nullptr;
+
+    if (!queue_.try_dequeue(token, raw_context)) {
+        // No tasks available
+        return std::nullopt;
+    }
+    if (!raw_context) {
+        // "Stop" token
+        DoPush(nullptr);
+        return boost::intrusive_ptr<impl::TaskContext>(nullptr);
+    }
+    return boost::intrusive_ptr<impl::TaskContext>(raw_context, /*add_ref=*/false); // Actual task
+}
+
 void TaskQueue::StopProcessing() { DoPush(nullptr); }
 
 std::size_t TaskQueue::GetSizeApproximate() const noexcept { return queue_.size_approx(); }
