@@ -519,15 +519,15 @@ void Socket::RegisterWithEpoll() {
             [this](uint32_t events) {
                 // When an event occurs, wake up any waiting tasks
                 if (events & EPOLLIN) {
-                    fd_control_->Read().WakeupWaiters();
+                    fd_control_->Read().NotifyReady();
                 }
                 if (events & EPOLLOUT) {
-                    fd_control_->Write().WakeupWaiters();
+                    fd_control_->Write().NotifyReady();
                 }
                 if (events & (EPOLLERR | EPOLLHUP)) {
                     // Wake up both readers and writers on error
-                    fd_control_->Read().WakeupWaiters();
-                    fd_control_->Write().WakeupWaiters();
+                    fd_control_->Read().NotifyReady();
+                    fd_control_->Write().NotifyReady();
                 }
             });
     } catch (const std::exception& ex) {
