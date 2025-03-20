@@ -12,6 +12,7 @@
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 
+#include <engine/task/task_processor.hpp>
 #include <engine/task/task_context.hpp>
 #include <userver/engine/impl/wait_list_fwd.hpp>
 
@@ -102,6 +103,8 @@ public:
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept { return poller_.TryGetContextAccessor(); }
 
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
+
+    void NotifyReady() { WakeupWaiters(); }
 
 private:
     friend class FdControl;
