@@ -513,29 +513,51 @@ void Socket::RegisterWithEpoll() {
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
-        int socket_fd = Fd();  // Cache the fd value
+        int socket_fd = Fd();
+        
+        // Create a shared_ptr to track this socket's lifetime
+        // Use a struct to avoid adding shared_ptr support to Socket class
+        struct SocketRef {
+            Socket* socket;
+            impl::FdControlHolder* fd_control;
+            int fd;
+        };
+        
+        // This shared_ptr will be kept alive as long as the callback exists
+        auto socket_ref = std::make_shared<SocketRef>(
+            SocketRef{this, &fd_control_, socket_fd});
+        
+        // Use weak_ptr in the callback to safely check if the socket still exists
+        auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
         
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
             EPOLLIN | EPOLLOUT,
-            [this, socket_fd](uint32_t events) {
-                // Check if this Socket instance is still valid and has the same fd
-                if (IsValid() && Fd() == socket_fd) {
-                    // When an event occurs, wake up any waiting tasks
-                    if (events & EPOLLIN) {
-                        fd_control_->Read().NotifyReady();
-                    }
-                    if (events & EPOLLOUT) {
-                        fd_control_->Write().NotifyReady();
-                    }
-                    if (events & (EPOLLERR | EPOLLHUP)) {
-                        // Wake up both readers and writers on error
-                        fd_control_->Read().NotifyReady();
-                        fd_control_->Write().NotifyReady();
+            [weak_ref](uint32_t events) {
+                // Try to get a valid reference to the socket
+                if (auto ref = weak_ref.lock()) {
+                    Socket* socket = ref->socket;
+                    
+                    // Double-check that the socket and its internal state are still valid
+                    // Also verify that we're working with the same file descriptor
+                    if (socket && socket->IsValid() && socket->Fd() == ref->fd) {
+                        auto& fd_control = *(ref->fd_control);
+                        
+                        // Process the events
+                        if (events & EPOLLIN) {
+                            fd_control->Read().NotifyReady();
+                        }
+                        if (events & EPOLLOUT) {
+                            fd_control->Write().NotifyReady();
+                        }
+                        if (events & (EPOLLERR | EPOLLHUP)) {
+                            fd_control->Read().NotifyReady();
+                            fd_control->Write().NotifyReady();
+                        }
                     }
                 }
-                // If the socket is no longer valid or has a different fd,
-                // we don't need to do anything.
+                // If we can't get a reference, the socket has been destroyed
+                // and we don't need to do anything
             });
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
