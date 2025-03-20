@@ -14,6 +14,7 @@
 
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_counter.hpp>
+#include <engine/task/task_processor.hpp> 
 
 USERVER_NAMESPACE_BEGIN
 
@@ -29,7 +30,7 @@ int CreateEpollFd() {
     return fd;
 }
 
-int CreateEventFd() {
+[[maybe_unused]] int CreateEventFd() {
     int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (fd == -1) {
         throw std::runtime_error("Failed to create eventfd: " + 
@@ -387,7 +388,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             
             // Process task
             try {
-                impl::TaskCounter::RunningToken run_token{context->GetTaskProcessor().GetTaskCounter()};
+                auto& task_counter = context->GetTaskCounter();
+                impl::TaskCounter::RunningToken run_token{task_counter};
                 context->DoStep();
             } catch (...) {
                 LOG_ERROR() << "Unhandled exception from DoStep()";
