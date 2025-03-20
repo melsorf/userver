@@ -114,7 +114,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                     epoll_ev_dispatcher_->RegisterFd(
                         notify_fd, 
                         EPOLLIN, 
-                        [&queue]([[maybe_unused]] uint32_t events) {
+                        []([[maybe_unused]] uint32_t events) {
                             // No need to do anything here - epoll thread will check
                             // queue directly when woken up
                         });
