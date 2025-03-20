@@ -95,9 +95,12 @@ EpollEventDispatcher::~EpollEventDispatcher() {
 void EpollEventDispatcher::Shutdown() {
     is_shutting_down_.store(true, std::memory_order_release);
     
-    // Wake up all threads
-    for (size_t i = 0; i < thread_count_; ++i) {
-        PostEvent(i);
+    // Wake up all threads with multiple attempts to ensure they all exit
+    for (int attempts = 0; attempts < 3; ++attempts) {
+        for (size_t i = 0; i < thread_count_; ++i) {
+            PostEvent(i);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
@@ -280,6 +283,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 LOG_ERROR() << "Unhandled exception from DoStep()";
                 has_failed = true;
             }
+            pools_->GetCoroPool().AccountStackUsage();
+            
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
             }
@@ -334,15 +339,16 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             const auto fd = events[i].data.fd;
             
             if (fd == thread_notify_fds_[thread_index]) {
-                // Thread notification - drain the eventfd
-                uint64_t buffer[8];
-                ssize_t ret;
-                do {
-                    ret = read(thread_notify_fds_[thread_index], &buffer, sizeof(buffer));
-                } while (ret > 0);
-                
-                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    LOG_ERROR() << "Failed to read from thread notification fd: " << strerror(errno);
+                // Thread notification - drain the eventfd completely
+                uint64_t buffer;
+                while (true) {
+                    ssize_t ret = read(thread_notify_fds_[thread_index], &buffer, sizeof(buffer));
+                    if (ret < 0) {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            LOG_ERROR() << "Failed to read from thread notification fd: " << strerror(errno);
+                        }
+                        break;
+                    }
                 }
                 continue;
             }
