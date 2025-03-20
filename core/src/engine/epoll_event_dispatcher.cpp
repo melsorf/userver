@@ -283,7 +283,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 LOG_ERROR() << "Unhandled exception from DoStep()";
                 has_failed = true;
             }
-            pools_->GetCoroPool().AccountStackUsage();
+            pools->GetCoroPool().AccountStackUsage();
             
             if (has_failed || context->IsFinished()) {
                 context->FinishDetached();
