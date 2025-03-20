@@ -201,7 +201,7 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
 #ifdef __linux__
     // Post event to epoll queue
-    if (config.use_epoll_mode && epoll_ev_dispatcher_) {
+    if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
         epoll_ev_dispatcher_->PostEvent();
     }
 #endif
