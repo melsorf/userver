@@ -513,22 +513,28 @@ void Socket::RegisterWithEpoll() {
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
+        std::weak_ptr<impl::FdControl> fd_control_weak = fd_control_;
         epoll_thread_id_ = task_processor.RegisterFd(
             Fd(),
             EPOLLIN | EPOLLOUT,
-            [this](uint32_t events) {
-                // When an event occurs, wake up any waiting tasks
-                if (events & EPOLLIN) {
-                    fd_control_->Read().NotifyReady();
+            [fd_control_weak](uint32_t events) {
+                // Get a shared_ptr from the weak_ptr to ensure it's still valid
+                if (auto fd_control = fd_control_weak.lock()) {
+                    // When an event occurs, wake up any waiting tasks
+                    if (events & EPOLLIN) {
+                        fd_control->Read().NotifyReady();
+                    }
+                    if (events & EPOLLOUT) {
+                        fd_control->Write().NotifyReady();
+                    }
+                    if (events & (EPOLLERR | EPOLLHUP)) {
+                        // Wake up both readers and writers on error
+                        fd_control->Read().NotifyReady();
+                        fd_control->Write().NotifyReady();
+                    }
                 }
-                if (events & EPOLLOUT) {
-                    fd_control_->Write().NotifyReady();
-                }
-                if (events & (EPOLLERR | EPOLLHUP)) {
-                    // Wake up both readers and writers on error
-                    fd_control_->Read().NotifyReady();
-                    fd_control_->Write().NotifyReady();
-                }
+                // If the fd_control is null, the socket has been destroyed,
+                // so we don't need to do anything.
             });
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
