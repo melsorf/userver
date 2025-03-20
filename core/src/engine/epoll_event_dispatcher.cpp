@@ -38,13 +38,6 @@ int CreateEpollFd() {
     }
     return fd;
 }
-
-void CloseIfValid(int& fd) {
-    if (fd >= 0) {
-        close(fd);
-        fd = -1;
-    }
-}
 }  // namespace
 
 EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
@@ -249,16 +242,6 @@ std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
     // Use a random approach
     static std::atomic<size_t> next_thread_index{0};
     return next_thread_index.fetch_add(1, std::memory_order_relaxed) % thread_count_;
-}
-
-void EpollEventDispatcher::WakeupWorkerThread(std::size_t thread_index) {
-    if (thread_index >= thread_count_) return;
-    
-    uint64_t expected_sleep_time = thread_sleep_start_time_[thread_index].load(std::memory_order_acquire);
-    if (expected_sleep_time != 0) {
-        thread_sleep_start_time_[thread_index].compare_exchange_strong(
-            expected_sleep_time, 0, std::memory_order_acq_rel);
-    }
 }
 
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue) {
