@@ -48,8 +48,8 @@ public:
     // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    // Post an event to wake up a worker thread
-    void PostEvent();
+    // Wake up the best thread to handle this task
+    void NotifyTaskAdded();
     
     // Post an event to wake up a specific worker thread
     void PostEvent(std::size_t thread_index);
@@ -59,9 +59,7 @@ public:
     
     // Check if shutdown is requested
     bool IsShuttingDown() const { return is_shutting_down_.load(std::memory_order_acquire); }
-    
-    // Returns the best thread to handle this task
-    std::optional<std::size_t> SelectThreadToWakeup();
+
 
 private:
 

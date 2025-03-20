@@ -202,7 +202,7 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
 #ifdef __linux__
     // Post event to epoll queue
     if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
-        epoll_ev_dispatcher_->PostEvent();
+        epoll_ev_dispatcher_->NotifyTaskAdded();
     }
 #endif
 }
