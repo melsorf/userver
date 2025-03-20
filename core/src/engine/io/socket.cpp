@@ -476,6 +476,7 @@ void Socket::Close() {
 #ifdef __linux__
     UnregisterFromEpoll();
 #endif
+    epoll_socket_ref_.reset();
     fd_control_.reset(); 
 }
 
@@ -532,7 +533,7 @@ void Socket::RegisterWithEpoll() {
         
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
-            EPOLLIN | EPOLLOUT,
+            EPOLLIN | EPOLLOUT | EPOLLET,
             [weak_ref](uint32_t events) {
                 // Try to get a valid reference to the socket
                 if (auto ref = weak_ref.lock()) {
@@ -571,6 +572,7 @@ void Socket::UnregisterFromEpoll() {
         auto& task_processor = engine::current_task::GetTaskProcessor();
         task_processor.UnregisterFd(Fd());
         epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+        epoll_socket_ref_.reset();
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to unregister socket from epoll: " << ex.what();
     }
