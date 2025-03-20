@@ -104,6 +104,7 @@ public:
 
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
 
+    // For epoll integration - allows sockets to wake up waiters
     void NotifyReady() { WakeupWaiters(); }
 
 private:
