@@ -131,7 +131,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                 PrepareWorkerThread(i);
                 workers_left.count_down();
 #ifdef __linux__
-                if (config.use_epoll_mode && epoll_ev_dispatcher_) {
+                if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
                     RunEventLoop(i);
                 } else {
                     ProcessTasks();

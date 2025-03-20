@@ -19,6 +19,7 @@ class TaskContext;
 class TaskQueue final {
 public:
     explicit TaskQueue(const TaskProcessorConfig& config);
+    ~TaskQueue(); 
 
     void Push(boost::intrusive_ptr<impl::TaskContext>&& context);
 
