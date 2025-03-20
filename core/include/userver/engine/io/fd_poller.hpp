@@ -10,7 +10,9 @@
 #include <userver/utils/fast_pimpl.hpp>
 
 #ifdef __linux__
-#include <core/src/engine/epoll_event_dispatcher.hpp>
+namespace engine {
+class EpollEventDispatcher;
+}
 #endif
 
 USERVER_NAMESPACE_BEGIN

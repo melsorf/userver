@@ -6,6 +6,10 @@
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_processor.hpp>
 
+#ifdef __linux__
+#include <engine/epoll_event_dispatcher.hpp>
+#endif
+
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
     static constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
