@@ -19,9 +19,14 @@
 #include <userver/logging/log.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
 
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {
+
+namespace impl {
+class TaskProcessorPools;
+}
 
 struct FdCallbackInfo {
     std::function<void(uint32_t)> callback;
