@@ -34,7 +34,8 @@ public:
     ~EpollEventDispatcher();
 
     // Process events using epoll (called by worker threads)
-    void ProcessEvents(std::size_t thread_index, TaskQueue& queue);
+    void ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
+        std::shared_ptr<impl::TaskProcessorPools> pools);
     
     // Register a file descriptor with EPOLLET
     std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
@@ -55,7 +56,7 @@ public:
     bool IsShuttingDown() const { return is_shutting_down_.load(std::memory_order_acquire); }
     
     // Returns the best thread to handle this task
-    std::size_t SelectThreadToWakeup();
+    std::optional<std::size_t> SelectThreadToWakeup();
 
 private:
 

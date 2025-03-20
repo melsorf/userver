@@ -106,7 +106,10 @@ void EpollEventDispatcher::Shutdown() {
 
 void EpollEventDispatcher::PostEvent() {
     // Wake up a single worker thread by choosing the best candidate
-    PostEvent(SelectThreadToWakeup());
+    const auto thread_to_wake_up = SelectThreadToWakeup();
+    if (thread_to_wake_up != std::nullopt) {
+        PostEvent(*thread_to_wake_up);
+    }
 }
 
 void EpollEventDispatcher::PostEvent(std::size_t thread_index) {
@@ -220,7 +223,7 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
     }
 }
 
-std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
+std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
     // First pass: check for spinning threads.
     for (size_t i = 0; i < thread_count_; ++i) {
         bool expected = true;
@@ -240,14 +243,11 @@ std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
             return i;
         }
     }
-    
-    // No spinning or sleeping threads found
-    // Use a random approach
-    static std::atomic<size_t> next_thread_index{0};
-    return next_thread_index.fetch_add(1, std::memory_order_relaxed) % thread_count_;
+    return std::nullopt;
 }
 
-void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue) {
+void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
+    std::shared_ptr<impl::TaskProcessorPools> pools) {
     if (thread_index >= thread_epoll_fds_.size() || thread_epoll_fds_[thread_index] < 0) {
         LOG_ERROR() << "Invalid epoll_fd for thread " << thread_index << ", falling back to regular ProcessTasks";
         return;
