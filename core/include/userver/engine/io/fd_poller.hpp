@@ -9,7 +9,9 @@
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
 
-#include <engine/epoll_event_dispatcher.hpp>
+#ifdef __linux__
+#include <core/src/engine/epoll_event_dispatcher.hpp>
+#endif
 
 USERVER_NAMESPACE_BEGIN
 
