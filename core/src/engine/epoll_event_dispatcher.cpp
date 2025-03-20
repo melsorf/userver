@@ -124,9 +124,6 @@ void EpollEventDispatcher::NotifyTaskAdded() {
     // Wake up the thread that's been sleeping the longest
     if (oldest_sleep_time > 0) {
         PostEvent(oldest_thread);
-    } else {
-        // No sleeping threads, just pick one
-        PostEvent(utils::RandRange(thread_count_));
     }
 }
 
