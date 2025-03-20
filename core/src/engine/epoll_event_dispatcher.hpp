@@ -48,8 +48,8 @@ public:
     // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    // Wake up the best thread to handle this task
-    void NotifyTaskAdded();
+    // Post an event to wake up a worker thread
+    void PostEvent();
     
     // Post an event to wake up a specific worker thread
     void PostEvent(std::size_t thread_index);
@@ -59,10 +59,11 @@ public:
     
     // Check if shutdown is requested
     bool IsShuttingDown() const { return is_shutting_down_.load(std::memory_order_acquire); }
-
+    
+    // Returns the best thread to handle this task
+    std::optional<std::size_t> SelectThreadToWakeup();
 
 private:
-
     // Thread count
     size_t thread_count_{0};
     
@@ -82,6 +83,11 @@ private:
     
     // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
+
+    // TODO: ???
+    std::thread heartbeat_thread_;
+    std::atomic<bool> heartbeat_stop_{false};
+    void HeartbeatThreadFunc();
 };
 
 }  // namespace engine

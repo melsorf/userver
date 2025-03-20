@@ -71,7 +71,12 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
             thread_spinning_[i].store(false, std::memory_order_relaxed);
             thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
         }
+        heartbeat_thread_ = std::thread([this]() { HeartbeatThreadFunc(); });
     } catch (...) {
+        heartbeat_stop_.store(true, std::memory_order_release);
+        if (heartbeat_thread_.joinable()) {
+            heartbeat_thread_.join();
+        }
         for (int fd : thread_epoll_fds_) {
             if (fd >= 0) close(fd);
         }
@@ -85,6 +90,10 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
 EpollEventDispatcher::~EpollEventDispatcher() {
     Shutdown();
     
+    heartbeat_stop_.store(true, std::memory_order_release);
+    if (heartbeat_thread_.joinable()) {
+        heartbeat_thread_.join();
+    }
     for (int fd : thread_epoll_fds_) {
         if (fd >= 0) close(fd);
     }
@@ -93,37 +102,45 @@ EpollEventDispatcher::~EpollEventDispatcher() {
     }
 }
 
-void EpollEventDispatcher::NotifyTaskAdded() {
-    // First check if there are any spinning threads that can take the task
-    bool has_spinning_thread = false;
-    for (size_t i = 0; i < thread_count_; ++i) {
-        if (thread_spinning_[i].load(std::memory_order_acquire)) {
-            has_spinning_thread = true;
-            break;
+void EpollEventDispatcher::HeartbeatThreadFunc() {
+    constexpr auto kHeartbeatInterval = std::chrono::milliseconds(500);
+
+    while (!heartbeat_stop_.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(kHeartbeatInterval);
+        
+        if (is_shutting_down_.load(std::memory_order_acquire)) break;
+        
+        for (size_t i = 0; i < thread_count_; ++i) {
+            auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+            if (sleep_timestamp > 0) {
+                auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+                auto sleep_duration = now - sleep_timestamp;
+                
+                if (sleep_duration > 1000000000LL) { // 1 sec
+                    PostEvent(i);
+                }
+            }
         }
     }
+}
+
+void EpollEventDispatcher::Shutdown() {
+    is_shutting_down_.store(true, std::memory_order_release);
     
-    // If there's a spinning thread, it will see the task in its next queue check
-    // without needing an explicit notification
-    if (has_spinning_thread) {
-        return;
-    }
-    
-    // Find a sleeping thread to wake up
-    uint64_t oldest_sleep_time = 0;
-    size_t oldest_thread = 0;
-    
-    for (size_t i = 0; i < thread_count_; ++i) {
-        uint64_t sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
-        if (sleep_timestamp > 0 && sleep_timestamp > oldest_sleep_time) {
-            oldest_sleep_time = sleep_timestamp;
-            oldest_thread = i;
+    // Wake up all threads with multiple attempts to ensure they all exit
+    for (int attempts = 0; attempts < 3; ++attempts) {
+        for (size_t i = 0; i < thread_count_; ++i) {
+            PostEvent(i);
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    
-    // Wake up the thread that's been sleeping the longest
-    if (oldest_sleep_time > 0) {
-        PostEvent(oldest_thread);
+}
+
+void EpollEventDispatcher::PostEvent() {
+    // Wake up a single worker thread by choosing the best candidate
+    const auto thread_to_wake_up = SelectThreadToWakeup();
+    if (thread_to_wake_up != std::nullopt) {
+        PostEvent(*thread_to_wake_up);
     }
 }
 
@@ -238,16 +255,27 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
     }
 }
 
-void EpollEventDispatcher::Shutdown() {
-    is_shutting_down_.store(true, std::memory_order_release);
-    
-    // Wake up all threads with multiple attempts to ensure they all exit
-    for (int attempts = 0; attempts < 3; ++attempts) {
-        for (size_t i = 0; i < thread_count_; ++i) {
-            PostEvent(i);
+std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
+    // First pass: check for spinning threads.
+    for (size_t i = 0; i < thread_count_; ++i) {
+        bool expected = true;
+        if (thread_spinning_[i].compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+            return i;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    
+    // Second pass: check for sleeping threads.
+    for (size_t i = 0; i < thread_count_; ++i) {
+        auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
+        // Skip threads with uninitialized timestamps
+        if (sleep_timestamp == 0) {
+            continue;
+        }
+        if (thread_sleep_start_time_[i].compare_exchange_strong(sleep_timestamp, 0, std::memory_order_acq_rel)) {
+            return i;
+        }
+    }
+    return std::nullopt;
 }
 
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
