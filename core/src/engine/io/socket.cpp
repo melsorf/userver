@@ -513,28 +513,29 @@ void Socket::RegisterWithEpoll() {
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
-        std::weak_ptr<impl::FdControl> fd_control_weak = fd_control_;
+        int socket_fd = Fd();  // Cache the fd value
+        
         epoll_thread_id_ = task_processor.RegisterFd(
-            Fd(),
+            socket_fd,
             EPOLLIN | EPOLLOUT,
-            [fd_control_weak](uint32_t events) {
-                // Get a shared_ptr from the weak_ptr to ensure it's still valid
-                if (auto fd_control = fd_control_weak.lock()) {
+            [this, socket_fd](uint32_t events) {
+                // Check if this Socket instance is still valid and has the same fd
+                if (IsValid() && Fd() == socket_fd) {
                     // When an event occurs, wake up any waiting tasks
                     if (events & EPOLLIN) {
-                        fd_control->Read().NotifyReady();
+                        fd_control_->Read().NotifyReady();
                     }
                     if (events & EPOLLOUT) {
-                        fd_control->Write().NotifyReady();
+                        fd_control_->Write().NotifyReady();
                     }
                     if (events & (EPOLLERR | EPOLLHUP)) {
                         // Wake up both readers and writers on error
-                        fd_control->Read().NotifyReady();
-                        fd_control->Write().NotifyReady();
+                        fd_control_->Read().NotifyReady();
+                        fd_control_->Write().NotifyReady();
                     }
                 }
-                // If the fd_control is null, the socket has been destroyed,
-                // so we don't need to do anything.
+                // If the socket is no longer valid or has a different fd,
+                // we don't need to do anything.
             });
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
