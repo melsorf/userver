@@ -210,7 +210,7 @@ std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     }
 }
 
-void FdPoller::SetEpollMode(bool use_epoll) {
+void FdPoller::SetEpollMode([[maybe_unused]] bool use_epoll) {
 #ifdef __linux__
     use_epoll_mode_ = current_task::GetTaskProcessor().IsEpollModeEnabled();
 #else

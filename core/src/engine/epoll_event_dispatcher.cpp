@@ -1,10 +1,19 @@
 #ifdef __linux__
 #include "epoll_event_dispatcher.hpp"
 
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 #include <cstring>
 #include <stdexcept>
 
+#include <userver/logging/log.hpp>
 #include <userver/utils/rand.hpp>
+
+#include <engine/task/task_context.hpp>
+#include <engine/task/task_counter.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
