@@ -241,6 +241,18 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
     }
 }
 
+void EpollEventDispatcher::Shutdown() {
+    is_shutting_down_.store(true, std::memory_order_release);
+    
+    // Wake up all threads with multiple attempts to ensure they all exit
+    for (int attempts = 0; attempts < 3; ++attempts) {
+        for (size_t i = 0; i < thread_count_; ++i) {
+            PostEvent(i);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
     std::shared_ptr<impl::TaskProcessorPools> pools) {
     if (thread_index >= thread_epoll_fds_.size() || thread_epoll_fds_[thread_index] < 0) {
