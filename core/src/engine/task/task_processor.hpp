@@ -78,6 +78,8 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+    bool IsEpollModeEnabled() const;
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -130,7 +132,6 @@ private:
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
 
 #ifdef __linux__
-    bool use_epoll_mode_{true};
     std::unique_ptr<EpollEventDispatcher> epoll_ev_dispatcher_;
     void RunEventLoop(std::size_t thread_index) noexcept;
     std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);

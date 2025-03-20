@@ -1,5 +1,6 @@
-#ifdef __linux__
 #pragma once
+
+#ifdef __linux__
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -10,18 +11,14 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <mutex>
-#include <thread>
 #include <unordered_map>
 #include <vector>
-#include <queue>
-#include <utility>
-#include <map>
 
+#include <engine/task/task_queue.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
-#include <engine/task/task_context.hpp>
-#include <engine/task/task_queue.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -34,58 +31,59 @@ struct FdCallbackInfo {
 
 class EpollEventDispatcher {
 public:
-    EpollEventDispatcher(size_t thread_count);
+    explicit EpollEventDispatcher(size_t thread_count);
     ~EpollEventDispatcher();
 
-    // Posts an event to wake up a thread for task processing
-    void PostEvent();
-
-    void PostTask(std::function<void()> task);
-    
-    // Schedule a timer event
-    bool ScheduleTimer(std::chrono::steady_clock::duration delay, 
-                      std::function<void()> callback);
+    // Process events using epoll (called by worker threads)
+    void ProcessEvents(std::size_t thread_index, TaskQueue& queue);
     
     // Register a file descriptor with EPOLLET
-    std::size_t RegisterFd(int fd, uint32_t events, 
-                          std::function<void(uint32_t)> callback);
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
     
     // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    // Process events from the epoll queue (called by worker threads)
-    void ProcessEvents(std::size_t thread_index, TaskQueue& queue);
+    // Schedule a timer event
+    bool ScheduleTimer(std::chrono::steady_clock::duration delay, std::function<void()> callback);
+    
+    // Post an event to wake up a worker thread
+    void PostEvent();
+    
+    // Post an event to wake up a specific worker thread
+    void PostEvent(std::size_t thread_index);
     
     // Initiate shutdown
     void Shutdown();
-
-    // Indicates if shutdown is requested
+    
+    // Check if shutdown is requested
     bool IsShuttingDown() const { return is_shutting_down_.load(std::memory_order_acquire); }
-
-    // Method to update the timerfd with the earliest deadline
-    void UpdateTimerFd();
-
-private:
-    // Wake up an appropriate worker thread
-    void WakeupWorkerThread(std::size_t thread_index);
-
-    // Select which thread to wake up based on current state
+    
+    // Returns the best thread to handle this task
     std::size_t SelectThreadToWakeup();
 
-    // Timer handling
+private:
+    // Wake up a specific worker thread
+    void WakeupWorkerThread(std::size_t thread_index);
+    
+    // Process expired timers
     void ProcessTimerEvents();
     
-    // Main epoll file descriptor
-    int epoll_fd_{-1};
+    // Update timerfd with the earliest deadline
+    void UpdateTimerFd();
+
+    // Thread count
+    size_t thread_count_{0};
     
-    // For task notifications
-    int task_event_fd_{-1};
+    // Per-thread epoll fds
+    std::vector<int> thread_epoll_fds_;
+    
+    // Per-thread notification eventfds
+    std::vector<int> thread_notify_fds_;
     
     // For timer events
     int timer_fd_{-1};
     
     // Thread states
-    size_t thread_count_{0};
     std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
     std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
     
@@ -97,6 +95,7 @@ private:
     std::mutex timers_mutex_;
     std::multimap<std::chrono::steady_clock::time_point, std::function<void()>> timers_;
     
+    // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
 };
 
@@ -104,4 +103,4 @@ private:
 
 USERVER_NAMESPACE_END
 
-#endif // __linux__
+#endif  // __linux__

@@ -28,6 +28,7 @@ struct TaskProcessorConfig {
     std::string name;
 
     bool should_guess_cpu_limit{false};
+    bool use_epoll_mode{true};
     std::size_t worker_threads{6};
     std::string thread_name;
     OsScheduling os_scheduling{OsScheduling::kNormal};

@@ -12,6 +12,7 @@
 #include <userver/utils/assert.hpp>
 
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
 #include <utils/check_syscall.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -79,6 +80,21 @@ FdControlHolder FdControl::Adopt(int fd) {
     ReduceSigpipe(fd);
     fd_control->read_.Reset(fd, Direction::Kind::kRead);
     fd_control->write_.Reset(fd, Direction::Kind::kWrite);
+
+    // Configure for epoll mode if available
+    bool use_epoll = false;
+    try {
+        if (current_task::ShouldCancel()) return fd_control;
+        auto& task_processor = current_task::GetTaskProcessor();
+        use_epoll = task_processor.IsEpollModeEnabled();
+    } catch (...) {
+        // May be called from non-coroutine context
+    }
+    
+    fd_control->read_.SetEpollMode(use_epoll);
+    fd_control->write_.SetEpollMode(use_epoll);
+    
+    return fd_control;
     return fd_control;
 }
 

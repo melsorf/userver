@@ -9,6 +9,8 @@
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
 
+#include <engine/epoll_event_dispatcher.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
@@ -82,6 +84,9 @@ public:
     /// Resets "ready" flag.
     std::optional<FdPoller::Kind> GetReady() noexcept;
 
+    // For integration with EpollEventDispatcher
+    void SetEpollMode(bool use_epoll);
+
     /// @cond
     // For internal use only.
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept;
@@ -89,6 +94,8 @@ public:
 
 private:
     friend class impl::Direction;
+
+    bool use_epoll_mode_{false};
 
     enum class State : int {
         kInvalid,

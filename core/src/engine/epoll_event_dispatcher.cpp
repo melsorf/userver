@@ -1,20 +1,9 @@
 #ifdef __linux__
 #include "epoll_event_dispatcher.hpp"
 
-#include <unistd.h>
 #include <cstring>
 #include <stdexcept>
-#include <fcntl.h>
-#include <map>
-#include <chrono>
-#include <queue>
-#include <functional>
-#include <mutex>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <sys/timerfd.h>
 
-#include <userver/logging/log.hpp>
 #include <userver/utils/rand.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -60,71 +49,96 @@ void CloseIfValid(int& fd) {
 EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     : thread_count_(thread_count) {
     try {
-        epoll_fd_ = CreateEpollFd();
-        task_event_fd_ = CreateEventFd();
         timer_fd_ = CreateTimerFd();
-
-        // Create and initialize thread state arrays
+        
+        thread_epoll_fds_.resize(thread_count_);
+        thread_notify_fds_.resize(thread_count_);
+        
+        for (size_t i = 0; i < thread_count_; ++i) {
+            thread_epoll_fds_[i] = CreateEpollFd();
+            
+            thread_notify_fds_[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+            if (thread_notify_fds_[i] == -1) {
+                throw std::runtime_error("Failed to create thread notification eventfd");
+            }
+            
+            struct epoll_event ev{};
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = thread_notify_fds_[i];
+            
+            if (epoll_ctl(thread_epoll_fds_[i], EPOLL_CTL_ADD, thread_notify_fds_[i], &ev) == -1) {
+                throw std::runtime_error("Failed to add notification fd to thread epoll");
+            }
+            
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = timer_fd_;
+            if (epoll_ctl(thread_epoll_fds_[i], EPOLL_CTL_ADD, timer_fd_, &ev) == -1) {
+                throw std::runtime_error("Failed to add timer_fd to thread epoll");
+            }
+        }
+        
         thread_spinning_ = std::make_unique<std::atomic<bool>[]>(thread_count_);
         thread_sleep_start_time_ = std::make_unique<std::atomic<uint64_t>[]>(thread_count_);
+        
         for (size_t i = 0; i < thread_count_; ++i) {
             thread_spinning_[i].store(false, std::memory_order_relaxed);
             thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
         }
-
-        // Register task notification eventfd in level-triggered mode
-        struct epoll_event ev{};
-        ev.events = EPOLLIN;
-        ev.data.fd = task_event_fd_;
-        if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, task_event_fd_, &ev) == -1) {
-            throw std::runtime_error("Failed to add task_event_fd to epoll: " + std::string(strerror(errno)));
-        }
-
-        // Register timer fd
-        ev.events = EPOLLIN | EPOLLET;
-        ev.data.fd = timer_fd_;
-        if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, timer_fd_, &ev) == -1) {
-            throw std::runtime_error("Failed to add timer_fd to epoll: " + std::string(strerror(errno)));
-        }
     } catch (...) {
-        // Clean up in case of failure
+        for (int fd : thread_epoll_fds_) {
+            if (fd >= 0) close(fd);
+        }
+        for (int fd : thread_notify_fds_) {
+            if (fd >= 0) close(fd);
+        }
         CloseIfValid(timer_fd_);
-        CloseIfValid(task_event_fd_);
-        CloseIfValid(epoll_fd_);
         throw;
     }
 }
 
 EpollEventDispatcher::~EpollEventDispatcher() {
     Shutdown();
+    
+    for (int fd : thread_epoll_fds_) {
+        if (fd >= 0) close(fd);
+    }
+    for (int fd : thread_notify_fds_) {
+        if (fd >= 0) close(fd);
+    }
     CloseIfValid(timer_fd_);
-    CloseIfValid(task_event_fd_);
-    CloseIfValid(epoll_fd_);
 }
 
 void EpollEventDispatcher::Shutdown() {
     is_shutting_down_.store(true, std::memory_order_release);
-    // Wake up all threads by writing a wakeup count into the eventfd
-    const uint64_t wakeup_count = thread_count_;
-    ssize_t ret = write(task_event_fd_, &wakeup_count, sizeof(wakeup_count));
-    if (ret != sizeof(wakeup_count) && errno != EAGAIN && errno != EWOULDBLOCK) {
-        LOG_ERROR() << "Shutdown: Failed to write wakeup_count to task_event_fd: " << strerror(errno);
+    
+    // Wake up all threads
+    for (size_t i = 0; i < thread_count_; ++i) {
+        PostEvent(i);
     }
 }
 
 void EpollEventDispatcher::PostEvent() {
-    if (task_event_fd_ < 0) return;
+    // Wake up a single worker thread by choosing the best candidate
+    PostEvent(SelectThreadToWakeup());
+}
+
+void EpollEventDispatcher::PostEvent(std::size_t thread_index) {
+    if (thread_index >= thread_notify_fds_.size() || thread_notify_fds_[thread_index] < 0) {
+        return;
+    }
+
     uint64_t value = 1;
     ssize_t ret;
     do {
-        ret = write(task_event_fd_, &value, sizeof(value));
+        ret = write(thread_notify_fds_[thread_index], &value, sizeof(value));
     } while (ret == -1 && errno == EINTR);
 
     if (ret != sizeof(value) && errno != EAGAIN && errno != EWOULDBLOCK) {
-        LOG_ERROR() << "Failed to write to task_event_fd: " << strerror(errno);
+        LOG_ERROR() << "Failed to write to thread notification fd: " << strerror(errno);
     }
-    // Wake up one worker thread.
-    WakeupWorkerThread(SelectThreadToWakeup());
+    
+    // Also mark the thread as not sleeping
+    WakeupWorkerThread(thread_index);
 }
 
 void EpollEventDispatcher::UpdateTimerFd() {
@@ -156,6 +170,7 @@ bool EpollEventDispatcher::ScheduleTimer(std::chrono::steady_clock::duration del
         timers_.emplace(deadline, std::move(callback));
         UpdateTimerFd();
     }
+    
     // Wake up a thread to make sure the timer is properly processed
     PostEvent();
     return true;
@@ -164,73 +179,101 @@ bool EpollEventDispatcher::ScheduleTimer(std::chrono::steady_clock::duration del
 std::size_t EpollEventDispatcher::RegisterFd(
     int fd, uint32_t events, std::function<void(uint32_t)> callback) {
     if (fd < 0) return std::numeric_limits<std::size_t>::max();
+    
     // For non-task FDs (like sockets) use edge-triggered mode
     struct epoll_event ev{};
     ev.events = events | EPOLLET; 
-    ev.data.fd = fd;
-
+    
+    // Choose a specific thread to handle this fd
+    auto target_thread = utils::RandRange(thread_count_);
+    
     bool registration_successful = false;
     {
         std::lock_guard<std::mutex> lock(fd_mutex_);
         
-        int op = EPOLL_CTL_ADD;
+        // Store callback info
         auto it = fd_callbacks_.find(fd);
         bool has_existing = (it != fd_callbacks_.end());
         
         if (has_existing) {
-            op = EPOLL_CTL_MOD;
-            // Store the events that this fd is interested in
+            // Update existing callback
+            it->second.callback = std::move(callback);
             it->second.requested_events = events;
+        } else {
+            // Register new callback
+            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events});
         }
         
-        int result = epoll_ctl(epoll_fd_, op, fd, &ev);
+        // Register with the chosen thread's epoll instance
+        ev.data.fd = fd;
+        int epoll_fd = thread_epoll_fds_[target_thread];
+        
+        int op = has_existing ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+        int result = epoll_ctl(epoll_fd, op, fd, &ev);
+        
         if (result == -1) {
             if (errno == EEXIST && op == EPOLL_CTL_ADD) {
-                result = epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+                result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             }
             if (result == -1) {
                 LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
-                            << " fd " << fd << " to unified epoll: " << strerror(errno);
+                            << " fd " << fd << " to thread epoll: " << strerror(errno);
+                
+                // Remove the callback if we just added it
+                if (!has_existing) {
+                    fd_callbacks_.erase(fd);
+                }
                 return std::numeric_limits<std::size_t>::max();
             }
         }
-
-        if (has_existing) {
-            it->second.callback = std::move(callback);
-        } else {
-            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events});
-        }
+        
         registration_successful = true;
     }
-    // Thread selection for this fd - using a random approach for even distribution
-    return registration_successful ? utils::RandRange(thread_count_) 
-                                   : std::numeric_limits<std::size_t>::max();
+    
+    return registration_successful ? target_thread : std::numeric_limits<std::size_t>::max();
 }
 
 void EpollEventDispatcher::UnregisterFd(int fd) {
     if (fd < 0) return;
-    bool needs_wakeup = false;
+    
+    std::vector<size_t> threads_to_wakeup;
     {
         std::lock_guard<std::mutex> lock(fd_mutex_);
         auto it = fd_callbacks_.find(fd);
-        if (it != fd_callbacks_.end()) {
-            fd_callbacks_.erase(it);
-            needs_wakeup = true;
+        if (it == fd_callbacks_.end()) {
+            return;
         }
-        if (epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-            if (errno != ENOENT && errno != EBADF) {
-                LOG_ERROR() << "Failed to remove fd " << fd << " from unified epoll: " 
-                           << strerror(errno);
+        
+        // Remove callback
+        fd_callbacks_.erase(it);
+        
+        // Unregister from all thread epoll instances
+        for (size_t i = 0; i < thread_count_; ++i) {
+            int epoll_fd = thread_epoll_fds_[i];
+            if (epoll_fd >= 0) {
+                int result = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                if (result == -1 && errno != ENOENT && errno != EBADF) {
+                    LOG_ERROR() << "Failed to remove fd " << fd << " from thread epoll: " 
+                                << strerror(errno);
+                }
+                
+                // Only add to wakeup list if the removal succeeded
+                if (result == 0) {
+                    threads_to_wakeup.push_back(i);
+                }
             }
         }
     }
-    if (needs_wakeup) {
-        PostEvent();
+    
+    // Wake up affected threads
+    for (auto thread_idx : threads_to_wakeup) {
+        PostEvent(thread_idx);
     }
 }
 
 void EpollEventDispatcher::ProcessTimerEvents() {
     if (timer_fd_ < 0) return;
+    
     // Drain the timer fd
     uint64_t expirations;
     ssize_t ret;
@@ -256,6 +299,7 @@ void EpollEventDispatcher::ProcessTimerEvents() {
         // Reset the timer for the next deadline
         UpdateTimerFd();
     }
+    
     // Execute callbacks
     for (auto& callback : expired_callbacks) {
         try {
@@ -276,6 +320,7 @@ std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
             return i;
         }
     }
+    
     // Second pass: check for sleeping threads.
     for (size_t i = 0; i < thread_count_; ++i) {
         auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
@@ -287,6 +332,7 @@ std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
             return i;
         }
     }
+    
     // No spinning or sleeping threads found
     // Use a random approach
     static std::atomic<size_t> next_thread_index{0};
@@ -294,6 +340,8 @@ std::size_t EpollEventDispatcher::SelectThreadToWakeup() {
 }
 
 void EpollEventDispatcher::WakeupWorkerThread(std::size_t thread_index) {
+    if (thread_index >= thread_count_) return;
+    
     uint64_t expected_sleep_time = thread_sleep_start_time_[thread_index].load(std::memory_order_acquire);
     if (expected_sleep_time != 0) {
         thread_sleep_start_time_[thread_index].compare_exchange_strong(
@@ -302,10 +350,12 @@ void EpollEventDispatcher::WakeupWorkerThread(std::size_t thread_index) {
 }
 
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue) {
-    if (epoll_fd_ < 0) {
-        LOG_ERROR() << "Invalid epoll_fd, falling back to regular ProcessTasks";
+    if (thread_index >= thread_epoll_fds_.size() || thread_epoll_fds_[thread_index] < 0) {
+        LOG_ERROR() << "Invalid epoll_fd for thread " << thread_index << ", falling back to regular ProcessTasks";
         return;
     }
+    
+    int epoll_fd = thread_epoll_fds_[thread_index];
     constexpr std::size_t kMaxEvents{256};
     struct epoll_event events[kMaxEvents];
 
@@ -358,6 +408,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
             continue;
         }
+        
         // Mark thread as sleeping
         thread_sleep_start_time_[thread_index].store(
             std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
@@ -367,73 +418,65 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
             continue;
         }
+        
         // Ensure visibility of changes before sleeping
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        int ready = epoll_wait(epoll_fd_, events, kMaxEvents, -1);
+        
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
+        
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
+        
         if (ready < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             break;
         }
+        
         // Process events returned by epoll.
         for (int i = 0; i < ready && !is_shutting_down_.load(std::memory_order_acquire); ++i) {
             const auto fd = events[i].data.fd;
-            if (fd == task_event_fd_) {
+            
+            if (fd == thread_notify_fds_[thread_index]) {
+                // Thread notification - drain the eventfd
                 uint64_t buffer[8];
                 ssize_t ret;
                 do {
-                    ret = read(task_event_fd_, &buffer, sizeof(buffer));
+                    ret = read(thread_notify_fds_[thread_index], &buffer, sizeof(buffer));
                 } while (ret > 0);
                 
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    LOG_ERROR() << "Failed to read from task_event_fd: " << strerror(errno);
+                    LOG_ERROR() << "Failed to read from thread notification fd: " << strerror(errno);
                 }
-                continue; 
+                continue;
             } else if (fd == timer_fd_) {
                 ProcessTimerEvents();
+                continue;
+            }
+            
+            // Handle other fd events (I/O, etc.)
+            FdCallbackInfo callback_info;
+            {
+                std::lock_guard<std::mutex> lock(fd_mutex_);
+                auto it = fd_callbacks_.find(fd);
+                if (it != fd_callbacks_.end()) {
+                    callback_info = it->second;
+                }
+            }
+            
+            if (callback_info.callback) {
+                uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                if (event_mask) {
+                    try {
+                        callback_info.callback(event_mask);
+                    } catch (const std::exception& ex) {
+                        LOG_ERROR() << "Exception in fd callback: " << ex.what();
+                    } catch (...) {
+                        LOG_ERROR() << "Unknown exception in fd callback";
+                    }
+                }
             } else {
-                FdCallbackInfo callback_info;
-                {
-                    std::lock_guard<std::mutex> lock(fd_mutex_);
-                    auto it = fd_callbacks_.find(fd);
-                    if (it != fd_callbacks_.end()) {
-                        callback_info = it->second;
-                    }
-                }
-                
-                if (callback_info.callback) {
-                    uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
-                    if (event_mask) {
-                        try {
-                            callback_info.callback(event_mask);
-                        } catch (const std::exception& ex) {
-                            LOG_ERROR() << "Exception in fd callback: " << ex.what();
-                        } catch (...) {
-                            LOG_ERROR() << "Unknown exception in fd callback";
-                        }
-                    }
-                    
-                    // Only rearm if not EPOLLHUP or EPOLLERR
-                    if (!(event_mask & (EPOLLHUP | EPOLLERR))) {
-                        std::lock_guard<std::mutex> lock(fd_mutex_);
-                        auto it = fd_callbacks_.find(fd);
-                        if (it != fd_callbacks_.end()) {
-                            struct epoll_event ev;
-                            // Preserve the original requested events
-                            ev.events = it->second.requested_events | EPOLLET;
-                            ev.data.fd = fd;
-                            if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
-                                if (errno != EBADF && errno != ENOENT) {
-                                    LOG_ERROR() << "Failed to rearm fd " << fd << ": " << strerror(errno);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
-                }
+                LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
             }
         }
     }
@@ -443,4 +486,4 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
 
 USERVER_NAMESPACE_END
 
-#endif __linux__
+#endif  // __linux__

@@ -38,6 +38,12 @@ private:
 
     moodycamel::ConcurrentQueue<impl::TaskContext*> queue_;
     moodycamel::LightweightSemaphore queue_semaphore_;
+
+#ifdef __linux__
+    int notify_fd_{-1};  // File descriptor for task notifications via eventfd
+public:
+    int GetNotifyFd() const;  // For EpollEventDispatcher to use
+#endif
 };
 
 }  // namespace engine

@@ -4,6 +4,7 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -183,11 +184,38 @@ int FdPoller::GetFd() const noexcept { return pimpl_->watcher_.GetFd(); }
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
+    
+    if (use_epoll_mode_ && current_task::GetTaskProcessor().IsEpollModeEnabled()) {
+        // In epoll mode, events are delivered through EpollEventDispatcher
+        // and WakeupWaiters, so we just need to wait for the signal
+        auto& current = current_task::GetCurrentTaskContext();
+
+        engine::impl::FutureWaitStrategy wait_strategy{*pimpl_, current};
+        
+        // Sleep until signaled or deadline
+        auto wakeup_source = current.Sleep(wait_strategy, deadline);
+        
+        // Check if we were woken up by a signal
+        if (wakeup_source == engine::impl::TaskContext::WakeupSource::kWaitList) {
+            return pimpl_->events_that_happened_.load(std::memory_order_relaxed);
+        }
+        return std::nullopt;
+    }
+    
+    // Wait path when not in epoll mode
     if (pimpl_->DoWait(deadline) == engine::impl::TaskContext::WakeupSource::kWaitList) {
         return pimpl_->events_that_happened_.load(std::memory_order_relaxed);
     } else {
         return std::nullopt;
     }
+}
+
+void FdPoller::SetEpollMode(bool use_epoll) {
+#ifdef __linux__
+    use_epoll_mode_ = current_task::GetTaskProcessor().IsEpollModeEnabled();
+#else
+    use_epoll_mode_ = use_epoll;
+#endif
 }
 
 std::optional<FdPoller::Kind> FdPoller::GetReady() noexcept {

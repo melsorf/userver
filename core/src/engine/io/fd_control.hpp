@@ -101,6 +101,8 @@ public:
 
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept { return poller_.TryGetContextAccessor(); }
 
+    void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
+
 private:
     friend class FdControl;
     explicit Direction(const ev::ThreadControl& control) : poller_(control) {}
