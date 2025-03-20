@@ -39,15 +39,6 @@ int CreateEpollFd() {
     return fd;
 }
 
-int CreateTimerFd() {
-    int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (fd == -1) {
-        throw std::runtime_error("Failed to create timerfd: " + 
-                                std::string(strerror(errno)));
-    }
-    return fd;
-}
-
 void CloseIfValid(int& fd) {
     if (fd >= 0) {
         close(fd);
@@ -59,8 +50,6 @@ void CloseIfValid(int& fd) {
 EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     : thread_count_(thread_count) {
     try {
-        timer_fd_ = CreateTimerFd();
-        
         thread_epoll_fds_.resize(thread_count_);
         thread_notify_fds_.resize(thread_count_);
         
@@ -79,12 +68,6 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
             if (epoll_ctl(thread_epoll_fds_[i], EPOLL_CTL_ADD, thread_notify_fds_[i], &ev) == -1) {
                 throw std::runtime_error("Failed to add notification fd to thread epoll");
             }
-            
-            ev.events = EPOLLIN | EPOLLET;
-            ev.data.fd = timer_fd_;
-            if (epoll_ctl(thread_epoll_fds_[i], EPOLL_CTL_ADD, timer_fd_, &ev) == -1) {
-                throw std::runtime_error("Failed to add timer_fd to thread epoll");
-            }
         }
         
         thread_spinning_ = std::make_unique<std::atomic<bool>[]>(thread_count_);
@@ -101,7 +84,6 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
         for (int fd : thread_notify_fds_) {
             if (fd >= 0) close(fd);
         }
-        CloseIfValid(timer_fd_);
         throw;
     }
 }
@@ -115,7 +97,6 @@ EpollEventDispatcher::~EpollEventDispatcher() {
     for (int fd : thread_notify_fds_) {
         if (fd >= 0) close(fd);
     }
-    CloseIfValid(timer_fd_);
 }
 
 void EpollEventDispatcher::Shutdown() {
@@ -146,44 +127,6 @@ void EpollEventDispatcher::PostEvent(std::size_t thread_index) {
     if (ret != sizeof(value) && errno != EAGAIN && errno != EWOULDBLOCK) {
         LOG_ERROR() << "Failed to write to thread notification fd: " << strerror(errno);
     }
-    
-    // Also mark the thread as not sleeping
-    WakeupWorkerThread(thread_index);
-}
-
-void EpollEventDispatcher::UpdateTimerFd() {
-    struct itimerspec new_value{};
-    if (!timers_.empty()) {
-        auto now = std::chrono::steady_clock::now();
-        auto earliest = timers_.begin()->first;
-        
-        if (earliest > now) {
-            auto delay = earliest - now;
-            new_value.it_value.tv_sec = std::chrono::duration_cast<std::chrono::seconds>(delay).count();
-            new_value.it_value.tv_nsec = 
-                std::chrono::duration_cast<std::chrono::nanoseconds>(delay).count() % 1000000000;
-        } else {
-            // Timer already expired, set to minimal value
-            new_value.it_value.tv_nsec = 1;
-        }
-    }
-    
-    timerfd_settime(timer_fd_, 0, &new_value, nullptr);
-}
-
-bool EpollEventDispatcher::ScheduleTimer(std::chrono::steady_clock::duration delay, std::function<void()> callback) {
-    if (timer_fd_ < 0) return false;
-
-    auto deadline = std::chrono::steady_clock::now() + delay;
-    {
-        std::lock_guard<std::mutex> lock(timers_mutex_);
-        timers_.emplace(deadline, std::move(callback));
-        UpdateTimerFd();
-    }
-    
-    // Wake up a thread to make sure the timer is properly processed
-    PostEvent();
-    return true;
 }
 
 std::size_t EpollEventDispatcher::RegisterFd(
@@ -278,47 +221,6 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
     // Wake up affected threads
     for (auto thread_idx : threads_to_wakeup) {
         PostEvent(thread_idx);
-    }
-}
-
-void EpollEventDispatcher::ProcessTimerEvents() {
-    if (timer_fd_ < 0) return;
-    
-    // Drain the timer fd
-    uint64_t expirations;
-    ssize_t ret;
-    do {
-        ret = read(timer_fd_, &expirations, sizeof(expirations));
-    } while (ret > 0);
-    
-    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        LOG_ERROR() << "Failed to read from timer_fd: " << strerror(errno);
-    }
-
-    auto now = std::chrono::steady_clock::now();
-    std::vector<std::function<void()>> expired_callbacks;
-    {
-        std::lock_guard<std::mutex> lock(timers_mutex_);
-        
-        // Find all expired timers
-        auto it = timers_.begin();
-        while (it != timers_.end() && it->first <= now) {
-            expired_callbacks.push_back(std::move(it->second));
-            it = timers_.erase(it);
-        }
-        // Reset the timer for the next deadline
-        UpdateTimerFd();
-    }
-    
-    // Execute callbacks
-    for (auto& callback : expired_callbacks) {
-        try {
-            callback();
-        } catch (const std::exception& ex) {
-            LOG_ERROR() << "Exception in timer callback: " << ex.what();
-        } catch (...) {
-            LOG_ERROR() << "Unknown exception in timer callback";
-        }
     }
 }
 
@@ -459,9 +361,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR() << "Failed to read from thread notification fd: " << strerror(errno);
                 }
-                continue;
-            } else if (fd == timer_fd_) {
-                ProcessTimerEvents();
                 continue;
             }
             

@@ -4,7 +4,6 @@
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <sys/timerfd.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -43,9 +42,6 @@ public:
     // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    // Schedule a timer event
-    bool ScheduleTimer(std::chrono::steady_clock::duration delay, std::function<void()> callback);
-    
     // Post an event to wake up a worker thread
     void PostEvent();
     
@@ -62,14 +58,6 @@ public:
     std::size_t SelectThreadToWakeup();
 
 private:
-    // Wake up a specific worker thread
-    void WakeupWorkerThread(std::size_t thread_index);
-    
-    // Process expired timers
-    void ProcessTimerEvents();
-    
-    // Update timerfd with the earliest deadline
-    void UpdateTimerFd();
 
     // Thread count
     size_t thread_count_{0};
@@ -80,9 +68,6 @@ private:
     // Per-thread notification eventfds
     std::vector<int> thread_notify_fds_;
     
-    // For timer events
-    int timer_fd_{-1};
-    
     // Thread states
     std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
     std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
@@ -90,10 +75,6 @@ private:
     // Mutex for fd operations
     std::mutex fd_mutex_;
     std::unordered_map<int, FdCallbackInfo> fd_callbacks_;
-    
-    // Timer callbacks and their mutex
-    std::mutex timers_mutex_;
-    std::multimap<std::chrono::steady_clock::time_point, std::function<void()>> timers_;
     
     // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
