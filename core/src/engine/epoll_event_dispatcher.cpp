@@ -15,6 +15,7 @@
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_counter.hpp>
 #include <engine/task/task_processor.hpp> 
+#include <engine/task/task_processor_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
