@@ -104,7 +104,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     try {
 #ifdef __linux__
         if (config.use_epoll_mode) {
-            epoll_ev_dispatcher_ = std::make_unique<EpollEventDispatcher>(worker_threads);
+            epoll_ev_dispatcher_ = std::make_unique<EpollEventDispatcher>(config_.worker_threads);
             
             // Add notification FD from each TaskQueue
             if (std::holds_alternative<TaskQueue>(task_queue_)) {
@@ -114,7 +114,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                     epoll_ev_dispatcher_->RegisterFd(
                         notify_fd, 
                         EPOLLIN, 
-                        [&queue](uint32_t events) {
+                        [&queue]([[maybe_unused]] uint32_t events) {
                             // No need to do anything here - epoll thread will check
                             // queue directly when woken up
                         });
@@ -171,7 +171,7 @@ void TaskProcessor::Cleanup() noexcept {
 void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
 #ifdef __linux__
-    if (config.use_epoll_mode && epoll_ev_dispatcher_) {
+    if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
         epoll_ev_dispatcher_->Shutdown();
     }
 #endif

@@ -1,6 +1,7 @@
 #include <engine/task/task_queue.hpp>
 
 #include <engine/task/task_context.hpp>
+#include <userver/logging/log.hpp>
 
 #ifdef __linux__
 #include <sys/eventfd.h>
