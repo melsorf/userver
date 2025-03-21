@@ -108,7 +108,6 @@ private:
 
 #ifdef __linux__
     void SetEpollMode(bool use_epoll);
-    std::mutex epoll_mutex_; 
 #endif
 };
 

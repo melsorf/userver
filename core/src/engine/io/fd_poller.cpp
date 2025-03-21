@@ -154,6 +154,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     int fd_{-1};
     std::optional<std::size_t> registered_fd_index_;
     engine::TaskProcessor* task_processor_{nullptr};
+    std::mutex epoll_mutex_; 
 #endif
 };
 
@@ -334,7 +335,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     }
 
     if (register_epollet && use_epoll_requested_) {
-        auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
+        auto* current_processor = engine::current_task::GetTaskProcessor();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this, kind](uint32_t events) {
