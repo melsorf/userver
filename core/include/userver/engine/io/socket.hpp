@@ -179,6 +179,12 @@ public:
         return SendAll(buf, len, deadline);
     }
 
+    Socket(Socket&&) noexcept = default;
+    Socket& operator=(Socket&&) noexcept = default;
+
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
+
 #ifdef __linux__
     ~Socket();
 #endif
