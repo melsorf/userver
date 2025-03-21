@@ -5,6 +5,7 @@
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_processor.hpp>
+#include <userver/logging/log.hpp>
 
 #ifdef __linux__
 #include <engine/epoll_event_dispatcher.hpp>
@@ -178,7 +179,20 @@ FdPoller::FdPoller(const ev::ThreadControl& control) : pimpl_(control) {
     static_assert(std::atomic<State>::is_always_lock_free);
 }
 
-FdPoller::~FdPoller() = default;
+FdPoller::~FdPoller() {
+    #ifdef __linux__
+        if (use_epoll_mode_ && poller_registration_ != std::numeric_limits<std::size_t>::max()) {
+            try {
+                if (IsValid()) {
+                    auto& task_processor = engine::current_task::GetTaskProcessor();
+                    task_processor.UnregisterFd(GetFd());
+                }
+            } catch (const std::exception& ex) {
+                LOG_DEBUG() << "Failed to unregister fd from epoll in destructor: " << ex.what();
+            }
+        }
+    #endif
+}
 
 FdPoller::operator bool() const noexcept { return IsValid(); }
 
@@ -232,7 +246,46 @@ std::optional<FdPoller::Kind> FdPoller::GetReady() noexcept {
 
 engine::impl::ContextAccessor* FdPoller::TryGetContextAccessor() noexcept { return &*pimpl_; }
 
-void FdPoller::Reset(int fd, Kind kind) { pimpl_->Reset(fd, kind); }
+void FdPoller::Reset(int fd, Kind kind) {
+#ifdef __linux__
+    auto& task_processor = engine::current_task::GetTaskProcessor();
+    if (task_processor.IsEpollModeEnabled()) {
+        uint32_t events = 0;
+        switch (kind) {
+            case Kind::kRead:
+                events = EPOLLIN;
+                break;
+            case Kind::kWrite:
+                events = EPOLLOUT;
+                break;
+            case Kind::kReadWrite:
+                events = EPOLLIN | EPOLLOUT;
+                break;
+        }
+        poller_registration_ = task_processor.RegisterFd(fd, events, 
+            [this](uint32_t epoll_events) {
+                // Map the epoll events to our Kind
+                Kind triggered_kind;
+                if ((epoll_events & (EPOLLIN | EPOLLOUT)) == (EPOLLIN | EPOLLOUT))
+                    triggered_kind = Kind::kReadWrite;
+                else if (epoll_events & EPOLLIN)
+                    triggered_kind = Kind::kRead;
+                else if (epoll_events & EPOLLOUT)
+                    triggered_kind = Kind::kWrite;
+                else
+                    triggered_kind = Kind::kReadWrite; // fallback
+                
+                // Store the triggered event kind and wake up waiters.
+                pimpl_->events_that_happened_.store(triggered_kind, std::memory_order_relaxed);
+                WakeupWaiters();
+            });
+        pimpl_->state_.store(State::kInUse, std::memory_order_release);
+        return;
+    }
+#endif
+    // Fallback: use the watcher_ based implementation.
+    pimpl_->Reset(fd, kind);
+}
 
 void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 
