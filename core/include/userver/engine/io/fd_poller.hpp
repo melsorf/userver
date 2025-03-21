@@ -90,6 +90,9 @@ public:
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept;
     /// @endcond
 
+#ifdef __linux__
+    void SetEpollMode(bool use_epoll);
+#endif
 private:
     friend class impl::Direction;
 
@@ -105,10 +108,6 @@ private:
 
     struct Impl;
     utils::FastPimpl<Impl, 208, 16> pimpl_;
-
-#ifdef __linux__
-    void SetEpollMode(bool use_epoll);
-#endif
 };
 
 }  // namespace engine::io
