@@ -566,7 +566,7 @@ void Socket::RegisterWithEpoll() {
 }
 
 void Socket::UnregisterFromEpoll() {
-    if (!IsValid()) return;
+    if (!IsValid() || Fd() < 0) return;
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
