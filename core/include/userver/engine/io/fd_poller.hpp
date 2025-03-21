@@ -104,6 +104,7 @@ private:
     utils::FastPimpl<Impl, 180, 16> pimpl_;
 
 #ifdef __linux__
+    void SetEpollMode(bool use_epoll);
     std::mutex epoll_mutex_; 
 #endif
 };

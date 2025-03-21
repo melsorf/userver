@@ -150,6 +150,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     std::atomic<FdPoller::Kind> events_that_happened_{};
 #ifdef __linux__
     bool use_epoll_{false};
+    bool use_epoll_requested_{true}; // By default, try to use epoll when available
     int fd_{-1};
     std::optional<std::size_t> registered_fd_index_;
     engine::TaskProcessor* task_processor_{nullptr};
@@ -309,6 +310,12 @@ void FdPoller::SwitchStateToReadyToUse() {
     );
 }
 
+#ifdef __linux__
+void FdPoller::SetEpollMode(bool use_epoll) {
+    pimpl_->use_epoll_requested_ = use_epoll;
+}
+#endif
+
 void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
     UINVARIANT(fd >= 0, "FdPoller::Reset: fd is -1");
     UASSERT(!IsValid());
@@ -320,7 +327,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         registered_fd_index_.reset();
     }
 
-    if (register_epollet) {
+    if (register_epollet && use_epoll_requested_) {
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
