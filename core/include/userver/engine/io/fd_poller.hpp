@@ -100,6 +100,7 @@ private:
     friend class impl::Direction;
 #ifdef __linux__
     bool use_epoll_mode_{true};
+    int cached_fd_{-1};
     std::size_t poller_registration_{std::numeric_limits<std::size_t>::max()};
 #endif
     enum class State : int {

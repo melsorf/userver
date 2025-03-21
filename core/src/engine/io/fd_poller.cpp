@@ -186,6 +186,7 @@ FdPoller::~FdPoller() {
                 if (IsValid()) {
                     auto& task_processor = engine::current_task::GetTaskProcessor();
                     task_processor.UnregisterFd(GetFd());
+                    cached_fd_ = -1;
                 }
             } catch (const std::exception& ex) {
                 LOG_DEBUG() << "Failed to unregister fd from epoll in destructor: " << ex.what();
@@ -198,11 +199,19 @@ FdPoller::operator bool() const noexcept { return IsValid(); }
 
 bool FdPoller::IsValid() const noexcept { return pimpl_->IsValid(); }
 
-int FdPoller::GetFd() const noexcept { return pimpl_->watcher_.GetFd(); }
+int FdPoller::GetFd() const noexcept { 
+#ifdef __linux__
+    if (use_epoll_mode_ && cached_fd_ != -1) {
+        return cached_fd_;
+    }
+#endif
+    return pimpl_->watcher_.GetFd(); 
+}
+    
 
 std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
     ResetReady();
-    
+#ifdef __linux__
     if (use_epoll_mode_ && current_task::GetTaskProcessor().IsEpollModeEnabled()) {
         // In epoll mode, events are delivered through EpollEventDispatcher
         // and WakeupWaiters, so we just need to wait for the signal
@@ -219,7 +228,7 @@ std::optional<FdPoller::Kind> FdPoller::Wait(Deadline deadline) {
         }
         return std::nullopt;
     }
-    
+#endif
     // Wait path when not in epoll mode
     if (pimpl_->DoWait(deadline) == engine::impl::TaskContext::WakeupSource::kWaitList) {
         return pimpl_->events_that_happened_.load(std::memory_order_relaxed);
@@ -248,6 +257,7 @@ engine::impl::ContextAccessor* FdPoller::TryGetContextAccessor() noexcept { retu
 
 void FdPoller::Reset(int fd, Kind kind) {
 #ifdef __linux__
+    cached_fd_ = fd;
     auto& task_processor = engine::current_task::GetTaskProcessor();
     if (task_processor.IsEpollModeEnabled()) {
         uint32_t events = 0;
@@ -273,7 +283,7 @@ void FdPoller::Reset(int fd, Kind kind) {
                 else if (epoll_events & EPOLLOUT)
                     triggered_kind = Kind::kWrite;
                 else
-                    triggered_kind = Kind::kReadWrite; // fallback
+                    triggered_kind = Kind::kReadWrite;
                 
                 // Store the triggered event kind and wake up waiters.
                 pimpl_->events_that_happened_.store(triggered_kind, std::memory_order_relaxed);
@@ -292,11 +302,13 @@ void FdPoller::Invalidate() {
     if (use_epoll_mode_ && poller_registration_ != std::numeric_limits<std::size_t>::max()) {
         try {
             auto& task_processor = engine::current_task::GetTaskProcessor();
-            task_processor.UnregisterFd(GetFd());
+            task_processor.UnregisterFd(cached_fd_);
             poller_registration_ = std::numeric_limits<std::size_t>::max();
             
             auto old_state = State::kInUse;
             pimpl_->state_.compare_exchange_strong(old_state, State::kInvalid);
+
+            cached_fd_ = -1;
             return;
         } catch (const std::exception& ex) {
             LOG_DEBUG() << "Failed to unregister fd from epoll: " << ex.what();
