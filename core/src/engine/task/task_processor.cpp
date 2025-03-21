@@ -106,7 +106,6 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         if (config.use_epoll_mode) {
             epoll_ev_dispatcher_ = std::make_unique<EpollEventDispatcher>(config_.worker_threads);
             
-            // Add notification FD from each TaskQueue
             if (std::holds_alternative<TaskQueue>(task_queue_)) {
                 auto& queue = std::get<TaskQueue>(task_queue_);
                 int notify_fd = queue.GetNotifyFd();

@@ -17,7 +17,11 @@ constexpr std::size_t kSemaphoreInitialCount = 0;
 }
 
 TaskQueue::TaskQueue(const TaskProcessorConfig& config)
-    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations), notify_fd_(-1) {
+    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations)
+#ifdef __linux__
+, notify_fd_(-1)
+#endif
+{
 #ifdef __linux__
     if (config.use_epoll_mode) {
         // Create eventfd for task notifications
@@ -49,42 +53,31 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopBlocking() {
     // a token for the task processor in a thread-local variable.
     thread_local moodycamel::ConsumerToken token(queue_);
 
-    impl::TaskContext* raw_context = nullptr;
-
 #ifdef __linux__
-    // In epoll mode, DoPopBlocking is only called when a notification was received,
-    // so we can try to dequeue directly without waiting
+    // In epoll mode, PopBlocking should never be called
     if (notify_fd_ != -1) {
-        if (queue_.try_dequeue(token, raw_context)) {
-            boost::intrusive_ptr<impl::TaskContext> context{
-                raw_context, /* add_ref= */ false};
-            
-            if (!context) {
-                // return "stop" token back
-                DoPush(nullptr);
-            }
-            
-            return context;
-        }
+        LOG_ERROR() << "TaskQueue::PopBlocking() called in epoll mode - this is wrong!";
+        UASSERT_MSG(false, "TaskQueue::PopBlocking() called in epoll mode");
         
-        // If we're here, it means the notification was received but someone else
-        // took the task before us. In EPOLLET mode we need to drain the eventfd
-        uint64_t value;
-        if (read(notify_fd_, &value, sizeof(value)) == -1 && errno != EAGAIN) {
-            LOG_ERROR() << "Failed to read from eventfd: " << strerror(errno);
-        }
-        
-        // Keep trying until we get a task
+        // Return some value
+        impl::TaskContext* raw_context = nullptr;
         while (!queue_.try_dequeue(token, raw_context)) {
             std::this_thread::yield();
         }
-    } else {
-#endif
-        // Semaphore-based blocking approach
-        raw_context = DoPopBlocking(token);
-#ifdef __linux__
+        
+        boost::intrusive_ptr<impl::TaskContext> context{
+            raw_context, /* add_ref= */ false};
+            
+        if (!context) {
+            // return "stop" token back
+            DoPush(nullptr);
+        }
+        
+        return context;
     }
 #endif
+    // Semaphore-based blocking approach - only used in non-epoll mode
+    impl::TaskContext* raw_context = DoPopBlocking(token);
     boost::intrusive_ptr<impl::TaskContext> context{
         raw_context, /* add_ref= */ false};
 

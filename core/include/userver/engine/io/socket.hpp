@@ -187,6 +187,7 @@ private:
     Sockaddr sockname_;
 
 #ifdef __linux__
+    ~Socket();
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
     std::shared_ptr<void> epoll_socket_ref_;
     // Register this socket with the epoll-based event dispatcher

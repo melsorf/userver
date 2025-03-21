@@ -509,6 +509,21 @@ void Socket::SetOption(int layer, int optname, int optval) {
 }
 
 #ifdef __linux__
+Socket::~Socket() {
+    if (epoll_thread_id_ != std::numeric_limits<std::size_t>::max()) {
+        try {
+            auto& task_processor = engine::current_task::GetTaskProcessor();
+            if (IsValid() && Fd() >= 0) {
+                task_processor.UnregisterFd(Fd());
+            }
+        } catch (...) {
+            // Ignore exceptions during destruction
+        }
+        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    }
+    // fd_control_ will be destroyed automatically
+}
+
 void Socket::RegisterWithEpoll() {
     if (!IsValid()) return;
     

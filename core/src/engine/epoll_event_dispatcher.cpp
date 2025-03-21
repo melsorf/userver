@@ -342,9 +342,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
             continue;
         }
-        // Ensure visibility of changes before sleeping
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
