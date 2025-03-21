@@ -335,7 +335,10 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     }
 
     if (register_epollet && use_epoll_requested_) {
-        auto* current_processor = engine::current_task::GetTaskProcessor();
+        auto* current_processor = nullptr;
+        if (engine::current_task::IsTaskProcessorThread()) {
+            current_processor = &engine::current_task::GetTaskProcessor();
+        }
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto callback = [this, kind](uint32_t events) {

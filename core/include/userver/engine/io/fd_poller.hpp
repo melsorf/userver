@@ -104,7 +104,7 @@ private:
     void SwitchStateToReadyToUse();
 
     struct Impl;
-    utils::FastPimpl<Impl, 180, 16> pimpl_;
+    utils::FastPimpl<Impl, 208, 16> pimpl_;
 
 #ifdef __linux__
     void SetEpollMode(bool use_epoll);
