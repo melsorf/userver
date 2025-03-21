@@ -169,6 +169,7 @@ FdPoller::Impl::~Impl() {
         } catch (...) {
             // Destructors shouldn't throw
         }
+    }
 #endif
 }
 
