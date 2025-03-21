@@ -84,7 +84,12 @@ uint32_t KindToEpollEvents(FdPoller::Kind kind) {
 
 }  // namespace
 
-struct FdPoller::Impl final : public engine::impl::ContextAccessor {
+struct FdPoller::Impl final 
+    : public engine::impl::ContextAccessor
+#ifdef __linux__
+    , public std::enable_shared_from_this<FdPoller::Impl>
+#endif
+{
     Impl(ev::ThreadControl control);
 
     ~Impl();
@@ -323,7 +328,7 @@ void FdPoller::SetEpollMode(bool use_epoll) {
 #endif
 
 #ifdef __linux__
-std::weak_ptr<FdPoller::Impl> FdPoller::GetWeakFromThis() {
+std::weak_ptr<FdPoller::Impl> FdPoller::Impl::GetWeakFromThis() {
     try {
         return shared_from_this();
     } catch (const std::bad_weak_ptr&) {

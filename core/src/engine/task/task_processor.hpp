@@ -81,7 +81,8 @@ public:
     bool IsEpollModeEnabled() const;
 
 #ifdef __linux__
-    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+        std::weak_ptr<void> owner = {});
     void UnregisterFd(int fd);
 #endif 
 

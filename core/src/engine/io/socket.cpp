@@ -559,7 +559,7 @@ void Socket::RegisterWithEpoll() {
                 }
                 // If we can't get a reference, the socket has been destroyed
                 // and we don't need to do anything
-            });
+            }, weak_ref);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
     }

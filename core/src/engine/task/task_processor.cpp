@@ -117,7 +117,8 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                         []([[maybe_unused]] uint32_t events) {
                             // No need to do anything here - epoll thread will check
                             // queue directly when woken up
-                        });
+                        },
+                        std::weak_ptr<void>{});
                 }
             }
         }
@@ -476,10 +477,11 @@ bool TaskProcessor::IsEpollModeEnabled() const {
 }
 
 #ifdef __linux__
-std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback) {
+std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+                                     std::weak_ptr<void> owner) {
     if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
         if (epoll_ev_dispatcher_) {
-            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback));
+            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
         }
     }
     return std::numeric_limits<std::size_t>::max();
