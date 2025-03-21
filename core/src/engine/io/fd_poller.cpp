@@ -162,15 +162,12 @@ FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watc
 
 FdPoller::Impl::~Impl() {
 #ifdef __linux__
-    if (use_epoll_ && fd_ >= 0) {
+    if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
         try {
-            if (task_processor_ && registered_fd_index_) {
-                task_processor_->UnregisterFd(fd_);
-            }
+            task_processor_->UnregisterFd(fd_);
         } catch (...) {
             // Destructors shouldn't throw
         }
-    }
 #endif
 }
 
@@ -199,6 +196,7 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 void FdPoller::Impl::Invalidate() {
 #ifdef __linux__
     if (use_epoll_ && task_processor_ && registered_fd_index_ && fd_ >= 0) {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
         try {
             task_processor_->UnregisterFd(fd_);
         } catch (const std::exception& ex) {
@@ -317,6 +315,11 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
 
     bool epoll_registered = false;
 #ifdef __linux__
+    if (use_epoll_ && fd_ >= 0 && registered_fd_index_) {
+        task_processor_->UnregisterFd(fd_);
+        registered_fd_index_.reset();
+    }
+
     if (register_epollet) {
         auto* current_processor = engine::current_task::GetTaskProcessorUnchecked();
         if (current_processor) {
@@ -327,31 +330,14 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 
                 if (events & (EPOLLHUP | EPOLLERR)) {
                     userver_kind = FdPoller::Kind::kReadWrite;
+                } else if ((events & EPOLLIN) && (events & EPOLLOUT)) {
+                    result_kind = FdPoller::Kind::kReadWrite;
+                } else if (events & EPOLLIN) {
+                    result_kind = FdPoller::Kind::kRead;
+                } else if (events & EPOLLOUT) {
+                    result_kind = FdPoller::Kind::kWrite;
                 } else {
-                    bool requested_read = (kind == FdPoller::Kind::kRead || kind == FdPoller::Kind::kReadWrite);
-                    bool requested_write = (kind == FdPoller::Kind::kWrite || kind == FdPoller::Kind::kReadWrite);
-                    
-                    bool can_read = events & (EPOLLIN | EPOLLPRI | EPOLLRDHUP);
-                    bool can_write = events & EPOLLOUT;
-                    
-                    if (requested_read && requested_write) {
-                        if (can_read && can_write) {
-                            userver_kind = FdPoller::Kind::kReadWrite;
-                        } else if (can_read) {
-                            userver_kind = FdPoller::Kind::kRead;
-                        } else if (can_write) {
-                            userver_kind = FdPoller::Kind::kWrite;
-                        } else {
-                            return; // No requested events
-                        }
-                    } else if (requested_read && can_read) {
-                        userver_kind = FdPoller::Kind::kRead;
-                    } else if (requested_write && can_write) {
-                        userver_kind = FdPoller::Kind::kWrite;
-                    } else {
-                        // No requested events
-                        return;
-                    }
+                    return;
                 }
                 
                 events_that_happened_.store(userver_kind, std::memory_order_release);

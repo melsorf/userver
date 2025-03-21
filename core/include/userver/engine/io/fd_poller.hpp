@@ -102,6 +102,10 @@ private:
 
     struct Impl;
     utils::FastPimpl<Impl, 180, 16> pimpl_;
+
+#ifdef __linux__
+    std::mutex epoll_mutex_; 
+#endif
 };
 
 }  // namespace engine::io
