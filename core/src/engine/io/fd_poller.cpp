@@ -335,7 +335,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     }
 
     if (register_epollet && use_epoll_requested_) {
-        auto* current_processor = nullptr;
+        engine::TaskProcessor* current_processor = nullptr;
         if (engine::current_task::IsTaskProcessorThread()) {
             current_processor = &engine::current_task::GetTaskProcessor();
         }
