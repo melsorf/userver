@@ -31,7 +31,7 @@ int CreateEpollFd() {
     return fd;
 }
 
-[[maybe_unused]] int CreateEventFd() {
+int CreateEventFd() {
     int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (fd == -1) {
         throw std::runtime_error("Failed to create eventfd: " + 
@@ -49,11 +49,7 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
         
         for (size_t i = 0; i < thread_count_; ++i) {
             thread_epoll_fds_[i] = CreateEpollFd();
-            
-            thread_notify_fds_[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-            if (thread_notify_fds_[i] == -1) {
-                throw std::runtime_error("Failed to create thread notification eventfd");
-            }
+            thread_notify_fds_[i] = CreateEventFd();
             
             struct epoll_event ev{};
             ev.events = EPOLLIN | EPOLLET;
@@ -96,12 +92,9 @@ EpollEventDispatcher::~EpollEventDispatcher() {
 void EpollEventDispatcher::Shutdown() {
     is_shutting_down_.store(true, std::memory_order_release);
     
-    // Wake up all threads with multiple attempts to ensure they all exit
-    for (int attempts = 0; attempts < 3; ++attempts) {
-        for (size_t i = 0; i < thread_count_; ++i) {
-            PostEvent(i);
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // Wake up all threads
+    for (size_t i = 0; i < thread_count_; ++i) {
+        PostEvent(i);
     }
 }
 
@@ -259,9 +252,9 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
 std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
     // First pass: check for spinning threads.
     for (size_t i = 0; i < thread_count_; ++i) {
-        bool expected = true;
-        if (thread_spinning_[i].compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
-            return i;
+        if (thread_spinning_[i].load(std::memory_order_acquire)) {
+            // One of the threads in the spin state will take the task itself
+            return std::nullopt;
         }
     }
     
@@ -290,11 +283,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     constexpr std::size_t kMaxEvents{256};
     struct epoll_event events[kMaxEvents];
 
-    // Mark thread as spinning.
-    thread_spinning_[thread_index].store(true, std::memory_order_release);
-
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
-        // Process tasks first (non-blocking)
+        // Process tasks first
         bool processed_task = false;
         while (auto context_ptr = queue.PopNonBlocking()) {
             processed_task = true;
@@ -326,19 +316,19 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
         if (processed_task) continue;
 
-        // Check briefly before going to sleep.
+        // Mark thread as spinning.
         thread_spinning_[thread_index].store(true, std::memory_order_release);
         utils::FastScopeGuard spinning_guard([&] () noexcept {
             thread_spinning_[thread_index].store(false, std::memory_order_release);
         });
-        constexpr int kSpinCount = 10000;
+        constexpr int kSpinCount = 1000;
         for (int i = 0; i < kSpinCount; ++i) {
             if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
                 break;  // There's work to do, don't sleep
             }
             std::this_thread::yield();
         }
-        
+        thread_spinning_[thread_index].store(false, std::memory_order_release);
         if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
             continue;
         }
@@ -352,7 +342,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
             continue;
         }
-        
         // Ensure visibility of changes before sleeping
         std::atomic_thread_fence(std::memory_order_seq_cst);
         
