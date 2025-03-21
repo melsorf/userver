@@ -9,12 +9,6 @@
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
 
-#ifdef __linux__
-namespace engine {
-class EpollEventDispatcher;
-}
-#endif
-
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
@@ -73,7 +67,7 @@ public:
     /// Setup fd and kind to wait for. After Reset() you may call Wait().
     /// FdPoller does not take the ownership of `fd`, you still have to close `fd`
     /// when you're done.
-    void Reset(int fd, Kind kind);
+    void Reset(int fd, Kind kind, bool register_epollet = true);
 
     /// Wait for an event kind that was passed in the latest Reset() call. If the
     /// operation (read/write) can already be handled, Wait() returns
@@ -88,9 +82,6 @@ public:
     /// Resets "ready" flag.
     std::optional<FdPoller::Kind> GetReady() noexcept;
 
-    // For integration with EpollEventDispatcher
-    void SetEpollMode(bool use_epoll);
-
     /// @cond
     // For internal use only.
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept;
@@ -98,10 +89,7 @@ public:
 
 private:
     friend class impl::Direction;
-#ifdef __linux__
-    bool use_epoll_mode_{true};
-    std::size_t poller_registration_{std::numeric_limits<std::size_t>::max()};
-#endif
+
     enum class State : int {
         kInvalid,
         kReadyToUse,
@@ -113,7 +101,7 @@ private:
     void SwitchStateToReadyToUse();
 
     struct Impl;
-    utils::FastPimpl<Impl, 128, 16> pimpl_;
+    utils::FastPimpl<Impl, 180, 16> pimpl_;
 };
 
 }  // namespace engine::io
