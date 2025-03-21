@@ -130,19 +130,29 @@ void EpollEventDispatcher::PostEvent(std::size_t thread_index) {
 }
 
 std::size_t EpollEventDispatcher::RegisterFd(
-    int fd, uint32_t events, std::function<void(uint32_t)> callback) {
-    if (fd < 0) return std::numeric_limits<std::size_t>::max();
+    int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+    std::weak_ptr<void> owner) {
+    if (fd < 0) {
+        LOG_WARNING() << "Attempt to register invalid fd " << fd;
+        return std::numeric_limits<std::size_t>::max();
+    }
+    
+    if (!callback) {
+        LOG_WARNING() << "Attempt to register fd " << fd << " with null callback";
+        return std::numeric_limits<std::size_t>::max();
+    }
     
     // For non-task FDs (like sockets) use edge-triggered mode
     struct epoll_event ev{};
     ev.events = events | EPOLLET; 
     
-    // Choose a specific thread to handle this fd
+    // Choose a specific thread to handle this fd - round robin would be better
+    // but for simplicity we'll use random assignment
     auto target_thread = utils::RandRange(thread_count_);
     
     bool registration_successful = false;
     {
-        std::lock_guard<std::mutex> lock(fd_mutex_);
+        std::unique_lock<std::mutex> fd_lock(fd_mutex_);
         
         // Store callback info
         auto it = fd_callbacks_.find(fd);
@@ -166,8 +176,10 @@ std::size_t EpollEventDispatcher::RegisterFd(
         
         if (result == -1) {
             if (errno == EEXIST && op == EPOLL_CTL_ADD) {
+                // If fd was already registered, try to modify it
                 result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             }
+            
             if (result == -1) {
                 LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
                             << " fd " << fd << " to thread epoll: " << strerror(errno);
@@ -176,11 +188,24 @@ std::size_t EpollEventDispatcher::RegisterFd(
                 if (!has_existing) {
                     fd_callbacks_.erase(fd);
                 }
+                
                 return std::numeric_limits<std::size_t>::max();
             }
         }
         
         registration_successful = true;
+        fd_lock.unlock();
+        
+        // Register owner if provided (using a separate mutex to avoid deadlocks)
+        if (registration_successful && owner.lock()) {
+            std::lock_guard<std::mutex> registry_lock(registry_mutex_);
+            fd_to_owner_[fd] = std::move(owner);
+        }
+    }
+    
+    // Notify the target thread about new registration
+    if (registration_successful) {
+        PostEvent(target_thread);
     }
     
     return registration_successful ? target_thread : std::numeric_limits<std::size_t>::max();
@@ -216,6 +241,12 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
                 }
             }
         }
+    }
+
+    // Remove from owner registry
+    {
+        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
+        fd_to_owner_.erase(fd);
     }
     
     // Wake up affected threads
@@ -367,12 +398,25 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             if (callback_info.callback) {
                 uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (event_mask) {
-                    try {
-                        callback_info.callback(event_mask);
-                    } catch (const std::exception& ex) {
-                        LOG_ERROR() << "Exception in fd callback: " << ex.what();
-                    } catch (...) {
-                        LOG_ERROR() << "Unknown exception in fd callback";
+                    bool should_call = true;
+                    {
+                        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
+                        auto owner_it = fd_to_owner_.find(fd);
+                        if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
+                            should_call = false;
+                            LOG_DEBUG() << "Owner of fd " << fd << " expired, removing fd from epoll";
+                            UnregisterFd(fd);
+                        }
+                    }
+                    
+                    if (should_call) {
+                        try {
+                            callback_info.callback(event_mask);
+                        } catch (const std::exception& ex) {
+                            LOG_ERROR() << "Exception in fd callback: " << ex.what();
+                        } catch (...) {
+                            LOG_ERROR() << "Unknown exception in fd callback";
+                        }
                     }
                 }
             } else {

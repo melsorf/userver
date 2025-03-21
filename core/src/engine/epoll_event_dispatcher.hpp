@@ -43,7 +43,8 @@ public:
         std::shared_ptr<impl::TaskProcessorPools> pools);
     
     // Register a file descriptor with EPOLLET
-    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback);
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+    std::weak_ptr<void> owner = {});
     
     // Unregister a file descriptor
     void UnregisterFd(int fd);
@@ -83,6 +84,9 @@ private:
     
     // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
+
+    static inline std::mutex registry_mutex_;
+    static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
 };
 
 }  // namespace engine

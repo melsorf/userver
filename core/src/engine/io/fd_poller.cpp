@@ -120,6 +120,10 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
         return engine::impl::EarlyWakeup{false};
     }
 
+#ifdef __linux__
+    std::weak_ptr<FdPoller::Impl> GetWeakFromThis();
+#endif
+
     void RemoveWaiter(engine::impl::TaskContext& waiter) noexcept override {
         waiters_->Remove(waiter);
         // we need to stop watcher manually to avoid racy wakeups later
@@ -318,6 +322,16 @@ void FdPoller::SetEpollMode(bool use_epoll) {
 }
 #endif
 
+#ifdef __linux__
+std::weak_ptr<FdPoller::Impl> FdPoller::GetWeakFromThis() {
+    try {
+        return shared_from_this();
+    } catch (const std::bad_weak_ptr&) {
+        return {};
+    }
+}
+#endif
+
 void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) {
     UINVARIANT(fd >= 0, "FdPoller::Reset: fd is -1");
     UASSERT(!IsValid());
@@ -341,6 +355,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         }
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
+            auto weak_self = GetWeakFromThis();
             auto callback = [this, kind](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
@@ -362,7 +377,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             };
             {
                 std::lock_guard<std::mutex> lock(epoll_mutex_);
-                auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback));
+                auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
                 if (reg_index != std::numeric_limits<std::size_t>::max()) {
                     fd_ = fd;
                     registered_fd_index_ = reg_index;
