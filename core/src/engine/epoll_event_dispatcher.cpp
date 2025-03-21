@@ -195,17 +195,20 @@ std::size_t EpollEventDispatcher::RegisterFd(
         int op = has_existing ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
         int result = epoll_ctl(epoll_fd, op, fd, &ev);
         
-        // If modifying fails because the fd isn’t present, try adding it again.
-        if (result == -1 && op == EPOLL_CTL_MOD && errno == ENOENT) {
-            result = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
-        }
         if (result == -1) {
-            LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify")
-                        << " fd " << fd << " to thread epoll: " << strerror(errno);
-            if (!has_existing) {
-                fd_callbacks_.erase(fd);
+            if (errno == EEXIST && op == EPOLL_CTL_ADD) {
+                result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
             }
-            return std::numeric_limits<std::size_t>::max();
+            if (result == -1) {
+                LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
+                            << " fd " << fd << " to thread epoll: " << strerror(errno);
+                
+                // Remove the callback if we just added it
+                if (!has_existing) {
+                    fd_callbacks_.erase(fd);
+                }
+                return std::numeric_limits<std::size_t>::max();
+            }
         }
         
         registration_successful = true;
@@ -352,7 +355,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         // Ensure visibility of changes before sleeping
         std::atomic_thread_fence(std::memory_order_seq_cst);
         
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
