@@ -166,7 +166,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
             it->second.requested_events = events;
         } else {
             // Register new callback
-            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events});
+            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events, target_thread});
         }
         
         // Register with the chosen thread's epoll instance
