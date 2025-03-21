@@ -61,6 +61,8 @@ logging::LogHelper& operator<<(logging::LogHelper& lh, const Event& event) noexc
 Inotify::Inotify() : fd_(engine::current_task::GetEventThread()) {
     fd_.Reset(inotify_init(), FdPoller::Kind::kRead);
     UASSERT(fd_.GetFd() != -1);
+
+    fd_.SetEpollMode(true);
 }
 
 Inotify::~Inotify() {
