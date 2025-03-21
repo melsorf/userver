@@ -107,7 +107,7 @@ private:
     void SwitchStateToReadyToUse();
 
     struct Impl;
-    utils::FastPimpl<Impl, 208, 16> pimpl_;
+    utils::FastPimpl<Impl, 224, 16> pimpl_;
 };
 
 }  // namespace engine::io
