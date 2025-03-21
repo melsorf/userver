@@ -330,7 +330,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         utils::FastScopeGuard spinning_guard([&] () noexcept {
             thread_spinning_[thread_index].store(false, std::memory_order_release);
         });
-        constexpr int kSpinCount = 100;
+        constexpr int kSpinCount = 10;
         for (int i = 0; i < kSpinCount; ++i) {
             if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
                 break;  // There's work to do, don't sleep
@@ -355,7 +355,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         // Ensure visibility of changes before sleeping
         std::atomic_thread_fence(std::memory_order_seq_cst);
         
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 1000);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
