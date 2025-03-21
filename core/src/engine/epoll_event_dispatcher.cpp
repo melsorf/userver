@@ -71,12 +71,7 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
             thread_spinning_[i].store(false, std::memory_order_relaxed);
             thread_sleep_start_time_[i].store(0, std::memory_order_relaxed);
         }
-        heartbeat_thread_ = std::thread([this]() { HeartbeatThreadFunc(); });
     } catch (...) {
-        heartbeat_stop_.store(true, std::memory_order_release);
-        if (heartbeat_thread_.joinable()) {
-            heartbeat_thread_.join();
-        }
         for (int fd : thread_epoll_fds_) {
             if (fd >= 0) close(fd);
         }
@@ -90,37 +85,11 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
 EpollEventDispatcher::~EpollEventDispatcher() {
     Shutdown();
     
-    heartbeat_stop_.store(true, std::memory_order_release);
-    if (heartbeat_thread_.joinable()) {
-        heartbeat_thread_.join();
-    }
     for (int fd : thread_epoll_fds_) {
         if (fd >= 0) close(fd);
     }
     for (int fd : thread_notify_fds_) {
         if (fd >= 0) close(fd);
-    }
-}
-
-void EpollEventDispatcher::HeartbeatThreadFunc() {
-    constexpr auto kHeartbeatInterval = std::chrono::milliseconds(500);
-
-    while (!heartbeat_stop_.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(kHeartbeatInterval);
-        
-        if (is_shutting_down_.load(std::memory_order_acquire)) break;
-        
-        for (size_t i = 0; i < thread_count_; ++i) {
-            auto sleep_timestamp = thread_sleep_start_time_[i].load(std::memory_order_acquire);
-            if (sleep_timestamp > 0) {
-                auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-                auto sleep_duration = now - sleep_timestamp;
-                
-                if (sleep_duration > 1000000000LL) { // 1 sec
-                    PostEvent(i);
-                }
-            }
-        }
     }
 }
 

@@ -83,11 +83,6 @@ private:
     
     // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
-
-    // TODO: ???
-    std::thread heartbeat_thread_;
-    std::atomic<bool> heartbeat_stop_{false};
-    void HeartbeatThreadFunc();
 };
 
 }  // namespace engine
