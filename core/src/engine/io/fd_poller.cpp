@@ -197,32 +197,32 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-#ifdef __linux__
-    if (use_epoll_ && task_processor_ && registered_fd_index_ && fd_ >= 0) {
-        std::lock_guard<std::mutex> lock(epoll_mutex_);
-        try {
-            task_processor_->UnregisterFd(fd_);
-        } catch (const std::exception& ex) {
-           // LOG_WARNING() << "Exception while unregistering fd " << fd_ << " from epoll: " << ex;
-        }
+    const auto current_state = state_.load(std::memory_order_acquire);
+    if (current_state == FdPoller::State::kInvalid) {
+        return;
+    }
+    UASSERT(current_state == FdPoller::State::kReadyToUse);
 
+#ifdef __linux__
+    {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
+        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
+            try {
+                task_processor_->UnregisterFd(fd_);
+            } catch (...) {
+                LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
+            }
+            registered_fd_index_.reset();
+        }
+        // Reset fd_ and use_epoll_ regardless of success
         fd_ = -1;
-        registered_fd_index_.reset();
         use_epoll_ = false;
         task_processor_ = nullptr;
-    } else {
-        StopWatcher();
     }
-#else
-    StopWatcher();
 #endif
-    auto old_state = State::kReadyToUse;
-    const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
 
-    UINVARIANT(
-        res,
-        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kReadyToUse, old_state)
-    );
+    StopWatcher();
+    state_.store(FdPoller::State::kInvalid, std::memory_order_release);
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
