@@ -143,13 +143,13 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 void FdPoller::Impl::Invalidate() {
     StopWatcher();
 
-    auto old_state = State::kReadyToUse;
-    const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
-
-    UINVARIANT(
-        res,
-        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kReadyToUse, old_state)
-    );
+    auto old_state = state_.load(std::memory_order_relaxed);
+    // Only try to change state if it's not already invalid
+    if (old_state != State::kInvalid) {
+        state_.store(State::kInvalid, std::memory_order_release);
+    } else {
+        return;  // Already invalid, nothing to do
+    }
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
