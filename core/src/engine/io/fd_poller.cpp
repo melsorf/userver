@@ -287,7 +287,24 @@ void FdPoller::Reset(int fd, Kind kind) {
     pimpl_->Reset(fd, kind);
 }
 
-void FdPoller::Invalidate() { pimpl_->Invalidate(); }
+void FdPoller::Invalidate() { 
+#ifdef __linux__
+    if (use_epoll_mode_ && poller_registration_ != std::numeric_limits<std::size_t>::max()) {
+        try {
+            auto& task_processor = engine::current_task::GetTaskProcessor();
+            task_processor.UnregisterFd(GetFd());
+            poller_registration_ = std::numeric_limits<std::size_t>::max();
+            
+            auto old_state = State::kInUse;
+            pimpl_->state_.compare_exchange_strong(old_state, State::kInvalid);
+            return;
+        } catch (const std::exception& ex) {
+            LOG_DEBUG() << "Failed to unregister fd from epoll: " << ex.what();
+        }
+    }
+#endif
+    pimpl_->Invalidate(); 
+}
 
 void FdPoller::WakeupWaiters() { pimpl_->WakeupWaiters(); }
 
