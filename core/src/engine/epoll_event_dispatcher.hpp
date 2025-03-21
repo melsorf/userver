@@ -31,6 +31,7 @@ class TaskProcessorPools;
 struct FdCallbackInfo {
     std::function<void(uint32_t)> callback;
     uint32_t requested_events;
+    size_t owner_thread;
 };
 
 class EpollEventDispatcher {

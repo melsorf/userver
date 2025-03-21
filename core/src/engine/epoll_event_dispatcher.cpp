@@ -146,8 +146,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
     struct epoll_event ev{};
     ev.events = events | EPOLLET; 
     
-    // Choose a specific thread to handle this fd - round robin would be better
-    // but for simplicity we'll use random assignment
+    // Choose a specific thread to handle this fd
     auto target_thread = utils::RandRange(thread_count_);
     
     bool registration_successful = false;
@@ -157,6 +156,9 @@ std::size_t EpollEventDispatcher::RegisterFd(
         // Store callback info
         auto it = fd_callbacks_.find(fd);
         bool has_existing = (it != fd_callbacks_.end());
+        if (has_existing && it->second.owner_thread != target_thread) {
+            target_thread = it->second.owner_thread;
+        }
         
         if (has_existing) {
             // Update existing callback
@@ -214,30 +216,29 @@ std::size_t EpollEventDispatcher::RegisterFd(
 void EpollEventDispatcher::UnregisterFd(int fd) {
     if (fd < 0) return;
     
-    std::vector<size_t> threads_to_wakeup;
+    size_t owner_thread = std::numeric_limits<size_t>::max();
+    bool need_wakeup = false;
     {
         std::lock_guard<std::mutex> lock(fd_mutex_);
         auto it = fd_callbacks_.find(fd);
         if (it == fd_callbacks_.end()) {
             return;
         }
-        
+        owner_thread = it->second.owner_thread;
         // Remove callback
         fd_callbacks_.erase(it);
         
-        // Unregister from all thread epoll instances
-        for (size_t i = 0; i < thread_count_; ++i) {
-            int epoll_fd = thread_epoll_fds_[i];
+        if (owner_thread < thread_count_) {
+            int epoll_fd = thread_epoll_fds_[owner_thread];
             if (epoll_fd >= 0) {
                 int result = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-                if (result == -1 && errno != ENOENT && errno != EBADF) {
-                    LOG_ERROR() << "Failed to remove fd " << fd << " from thread epoll: " 
-                                << strerror(errno);
-                }
-                
-                // Only add to wakeup list if the removal succeeded
-                if (result == 0) {
-                    threads_to_wakeup.push_back(i);
+                if (result == -1) {
+                    if (errno != ENOENT && errno != EBADF) {
+                        LOG_ERROR() << "Failed to remove fd " << fd << " from thread epoll: " << strerror(errno);
+                    }
+                } else {
+                    // Succeeded
+                    need_wakeup = true;
                 }
             }
         }
@@ -249,9 +250,9 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
         fd_to_owner_.erase(fd);
     }
     
-    // Wake up affected threads
-    for (auto thread_idx : threads_to_wakeup) {
-        PostEvent(thread_idx);
+    // Wake up thread
+    if (need_wakeup && owner_thread < thread_count_) {
+        PostEvent(owner_thread);
     }
 }
 
@@ -391,7 +392,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 std::lock_guard<std::mutex> lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
                 if (it != fd_callbacks_.end()) {
-                    callback_info = it->second;
+                    if (it->second.owner_thread == thread_index) {
+                        callback_info = it->second;
+                    } else {
+                        LOG_WARNING() << "Event received on thread " << thread_index 
+                                     << " for fd " << fd << " registered on thread " 
+                                     << it->second.owner_thread;
+                    }
                 }
             }
             
