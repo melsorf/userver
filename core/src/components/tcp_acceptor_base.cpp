@@ -73,7 +73,7 @@ TcpAcceptorBase::TcpAcceptorBase(
       sockets_task_processor_(context.GetTaskProcessor(SocketsTaskProcessorName(config, acceptor_config))) {
     for (const auto& port : acceptor_config.ports) {
         auto socket = server::net::CreateSocket(acceptor_config, port);
-        sockets_.emplace_back(SocketData{std::move(socket), {}});
+        sockets_.emplace_back(std::move(socket), engine::Task{});
     }
 }
 
