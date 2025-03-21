@@ -4,6 +4,9 @@
 /// @brief Low-level file descriptor r/w poller
 
 #include <memory>
+#ifdef __linux__
+#include <mutex>
+#endif
 #include <optional>
 
 #include <userver/engine/deadline.hpp>
