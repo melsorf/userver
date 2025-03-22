@@ -92,26 +92,30 @@ void FileReader::BackUp(std::size_t size) {
 }
 
 void FileReader::Finish() {
-    std::size_t bytes_read = 0;
+    const auto file_size = file_.GetSize();
+    const auto current_position = file_.GetPosition();
 
-    try {
-        char extra_byte = 0;
-        bytes_read = file_.Read(&extra_byte, 1);
-    } catch (const std::exception& ex) {
-        throw Error(fmt::format("Failed to read from the dump file \"{}\": {}", path_, ex.what()));
-    }
+    if (current_position < file_size) {
+        std::size_t bytes_read = 0;
+        try {
+            char extra_byte = 0;
+            bytes_read = file_.Read(&extra_byte, 1);
+        } catch (const std::exception& ex) {
+            throw Error(fmt::format("Failed to read from the dump file \"{}\": {}", path_, ex.what()));
+        }
 
-    if (bytes_read != 0) {
-        const auto file_size = file_.GetSize();
-        const auto position = file_.GetPosition() - bytes_read;
-        throw Error(fmt::format(
-            "Unexpected extra data at the end of the dump file \"{}\": "
-            "file-size={}, position={}, unread-size={}",
-            path_,
-            file_size,
-            position,
-            file_size - position
-        ));
+        if (bytes_read != 0) {
+            const auto file_size = file_.GetSize();
+            const auto position = file_.GetPosition() - bytes_read;
+            throw Error(fmt::format(
+                "Unexpected extra data at the end of the dump file \"{}\": "
+                "file-size={}, position={}, unread-size={}",
+                path_,
+                file_size,
+                position,
+                file_size - position
+            ));
+        }
     }
 
     try {
