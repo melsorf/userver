@@ -109,8 +109,7 @@ size_t PipeWriter::WriteAll(const void* buf, size_t len, Deadline deadline) {
     if (!IsValid()) {
         throw IoException("Attempt to WriteAll to closed pipe end");
     }
-    auto& dir = fd_control_->Write();
-    dir.ResetReady(); 
+    auto& dir = fd_control_->Write(); 
     impl::Direction::SingleUserGuard guard(dir);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     void* nonconst_buf = const_cast<void*>(buf);
