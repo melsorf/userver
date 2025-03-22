@@ -231,7 +231,7 @@ void FdPoller::Impl::Invalidate() {
         std::lock_guard<std::mutex> lock(epoll_mutex_);
         if (use_epoll_ && fd_ >= 0 &&task_processor_ && registered_fd_index_) {
             fd_to_unregister = fd_;
-            task_processor = task_processor_;
+            processor = task_processor_;
         }
         registered_fd_index_.reset();
         fd_ = -1;
