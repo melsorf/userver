@@ -511,23 +511,29 @@ void Socket::SetOption(int layer, int optname, int optval) {
 
 #ifdef __linux__
 Socket::~Socket() {
-    auto thread_id = epoll_thread_id_;
-    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
-    
-    // First, reset the reference so that the callback cannot access the object.
-    auto socket_ref = std::move(epoll_socket_ref_);
-    
-    if (thread_id != std::numeric_limits<std::size_t>::max()) {
-        try {
-            if (registered_task_processor_) {
-                int fd = socket_ref ? socket_ref->fd : -1;
-                if (fd >= 0) {
-                    registered_task_processor_->UnregisterFd(fd);
+    try {
+        auto thread_id = epoll_thread_id_;
+        auto processor = registered_task_processor_;
+        auto ref = std::move(epoll_socket_ref_);
+
+        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+        registered_task_processor_ = nullptr;
+        
+        if (thread_id != std::numeric_limits<std::size_t>::max() && processor) {
+            int fd = -1;
+            if (ref) {
+                fd = dynamic_cast<CallbackState*>(ref.get())->fd;
+            }
+            if (fd >= 0) {
+                try {
+                    processor->UnregisterFd(fd);
+                } catch (const std::exception& ex) {
+                    LOG_ERROR() << "Failed to unregister socket from epoll: " << ex.what();
                 }
             }
-        } catch (...) {
-            LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
         }
+    } catch (...) {
+        // Destructor shouldn't throw
     }
 }
 
@@ -539,26 +545,21 @@ void Socket::RegisterWithEpoll() {
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
         
-        // This shared_ptr will be kept alive as long as the callback exists
-        auto socket_ref = std::make_shared<SocketRef>(
-            SocketRef{this, &fd_control_, socket_fd, registered_task_processor_});
-        
-        // Use weak_ptr in the callback to safely check if the socket still exists
-        auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
+        // Create a copy of the necessary data so that we don't have to access this
+        // when the callback is called
+        auto state = std::make_shared<CallbackState>(CallbackState{fd_control_, socket_fd});
+        auto weak_state = std::weak_ptr<CallbackState>(state);
         
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
             EPOLLIN | EPOLLOUT | EPOLLET,
-            [weak_ref](uint32_t events) {
+            [weak_state](uint32_t events) {
                 // Try to get a valid reference to the socket
-                if (auto ref = weak_ref.lock()) {
-                    Socket* socket = ref->socket;
-                    
+                if (auto state_ptr = weak_state.lock()) {
+
                     // Double-check that the socket and its internal state are still valid
                     // Also verify that we're working with the same file descriptor
-                    if (socket && socket->IsValid() && socket->Fd() == ref->fd) {
-                        auto& fd_control = *(ref->fd_control);
-                        
+                    if (state_ptr->fd_control) {
                         // Process the events
                         if (events & EPOLLIN) {
                             fd_control->Read().NotifyReady();
@@ -574,8 +575,8 @@ void Socket::RegisterWithEpoll() {
                 }
                 // If we can't get a reference, the socket has been destroyed
                 // and we don't need to do anything
-            }, weak_ref);
-            epoll_socket_ref_ = std::move(socket_ref);
+            }, weak_state);
+            epoll_socket_ref_ = std::move(state);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
     }
