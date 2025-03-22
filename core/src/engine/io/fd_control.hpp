@@ -146,6 +146,10 @@ private:
     TryHandleError(int error_code, size_t processed_bytes, TransferMode mode, Deadline deadline, Context&... context);
 
     FdPoller poller_;
+
+#ifdef __linux__
+    std::atomic<bool> is_ready_{false};
+#endif
 };
 
 class FdControl final {
