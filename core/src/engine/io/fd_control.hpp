@@ -16,7 +16,6 @@
 #include <engine/task/task_context.hpp>
 #include <userver/engine/impl/wait_list_fwd.hpp>
 
-
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::io::impl {
@@ -152,13 +151,6 @@ public:
 
     // does not close, must have no waiting in progress
     void Invalidate();
-#ifdef __linux__
-static FdControlHolder Share(FdControl* control) {
-    if (!control) return FdControlHolder{};
-    auto* new_control = new FdControl(*control);
-    return FdControlHolder{new_control};
-}
-#endif
 
 private:
     Direction read_;

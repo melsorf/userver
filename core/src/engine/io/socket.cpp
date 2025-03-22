@@ -547,7 +547,12 @@ void Socket::RegisterWithEpoll() {
         
         // Create a copy of the necessary data so that we don't have to access this
         // when the callback is called
-        auto state = std::make_shared<CallbackState>(CallbackState{impl::FdControl::Share(fd_control_.get()), socket_fd});
+        auto state = std::make_shared<CallbackState>();
+        state->fd = socket_fd;
+
+        auto self_weak = std::weak_ptr<Socket>(shared_from_this());
+        state->socket_weak = self_weak;
+
         auto weak_state = std::weak_ptr<CallbackState>(state);
         
         epoll_thread_id_ = task_processor.RegisterFd(
@@ -557,20 +562,14 @@ void Socket::RegisterWithEpoll() {
                 // Try to get a valid reference to the socket
                 if (auto state_ptr = weak_state.lock()) {
 
-                    // Double-check that the socket and its internal state are still valid
-                    // Also verify that we're working with the same file descriptor
-                    if (state_ptr->fd_control) {
-                        // Process the events
-                        if (events & EPOLLIN) {
-                            fd_control->Read().NotifyReady();
-                        }
-                        if (events & EPOLLOUT) {
-                            fd_control->Write().NotifyReady();
-                        }
-                        if (events & (EPOLLERR | EPOLLHUP)) {
-                            fd_control->Read().NotifyReady();
-                            fd_control->Write().NotifyReady();
-                        }
+                    if (events & EPOLLIN) {
+                        state_ptr->read_ready.store(true, std::memory_order_release);
+                    }
+                    if (events & EPOLLOUT) {
+                        state_ptr->write_ready.store(true, std::memory_order_release);
+                    }
+                    if (auto socket_ptr = state_ptr->socket_weak.lock()) {
+                        socket_ptr->NotifyIoReady(events);
                     }
                 }
                 // If we can't get a reference, the socket has been destroyed
@@ -579,6 +578,21 @@ void Socket::RegisterWithEpoll() {
             epoll_socket_ref_ = std::move(state);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
+    }
+}
+
+void Socket::NotifyIoReady(uint32_t events) {
+    if (!fd_control_) return;
+    
+    if (events & EPOLLIN) {
+        fd_control_->Read().NotifyReady();
+    }
+    if (events & EPOLLOUT) {
+        fd_control_->Write().NotifyReady();
+    }
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        fd_control_->Read().NotifyReady();
+        fd_control_->Write().NotifyReady();
     }
 }
 

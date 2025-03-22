@@ -38,7 +38,8 @@ enum class SocketType {
 /// thread-safe to concurrently write to socket. However it is safe to
 /// concurrently read and write into socket:
 /// @snippet src/engine/io/socket_test.cpp send self concurrent
-class [[nodiscard]] Socket final : public RwBase {
+class [[nodiscard]] Socket final : public RwBase,
+                                    public std::enable_shared_from_this<Socket> {
 public:
     struct RecvFromResult {
         size_t bytes_received{0};
@@ -193,8 +194,10 @@ public:
     ~Socket();
 
     struct CallbackState {
-        impl::FdControlHolder fd_control;
         int fd;
+        std::atomic<bool> read_ready{false};
+        std::atomic<bool> write_ready{false};
+        std::weak_ptr<Socket> socket_weak;
     };
 #endif
 
