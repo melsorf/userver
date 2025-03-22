@@ -113,7 +113,7 @@ private:
 
     class Impl;
     class ReadContextAccessor;
-    constexpr static size_t kSize = 344;
+    constexpr static size_t kSize = 352;
     constexpr static size_t kAlignment = 8;
     utils::FastPimpl<Impl, kSize, kAlignment> impl_;
 };
