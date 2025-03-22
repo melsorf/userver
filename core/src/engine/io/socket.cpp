@@ -511,7 +511,7 @@ void Socket::SetOption(int layer, int optname, int optval) {
 
 #ifdef __linux__
 Socket::~Socket() {
-    aauto thread_id = epoll_thread_id_;
+    auto thread_id = epoll_thread_id_;
     auto processor = registered_task_processor_;
     int socket_fd = -1;
     
@@ -523,8 +523,6 @@ Socket::~Socket() {
     // Reset the epoll registration data
     epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
     registered_task_processor_ = nullptr;
-    
-    // Clear the socket_ref - this will eventually clear all callbacks
     epoll_socket_ref_.reset();
     
     if (thread_id != std::numeric_limits<std::size_t>::max() && processor && socket_fd >= 0) {
@@ -557,27 +555,24 @@ void Socket::RegisterWithEpoll() {
             [weak_ref](uint32_t events) {
                 // Try to get a valid reference to the socket
                 if (auto ref = weak_ref.lock()) {
-                    auto& fd_control = ref->fd_control;
+                    auto fd_control_ptr = ref->fd_control;
                     int fd = ref->fd;
                     
-                    // Double-check that the socket and its internal state are still valid
-                    // Also verify that we're working with the same file descriptor
-                    if (fd_control && fd == fd_control->Fd()) {
+                    // Verify the FdControlHolder is still valid and points to the same fd
+                    if (fd_control_ptr && *fd_control_ptr && fd == (*fd_control_ptr)->Fd()) {
                         // Process the events
                         if (events & EPOLLIN) {
-                            fd_control->Read().NotifyReady();
+                            (*fd_control_ptr)->Read().NotifyReady();
                         }
                         if (events & EPOLLOUT) {
-                            fd_control->Write().NotifyReady();
+                            (*fd_control_ptr)->Write().NotifyReady();
                         }
                         if (events & (EPOLLERR | EPOLLHUP)) {
-                            fd_control->Read().NotifyReady();
-                            fd_control->Write().NotifyReady();
+                            (*fd_control_ptr)->Read().NotifyReady();
+                            (*fd_control_ptr)->Write().NotifyReady();
                         }
                     }
                 }
-                // If we can't get a reference, the socket has been destroyed
-                // and we don't need to do anything
             }, weak_ref);
             epoll_socket_ref_ = std::move(socket_ref);
     } catch (const std::exception& ex) {
