@@ -16,6 +16,7 @@
 
 #include <build_config.hpp>
 #include <engine/io/fd_control.hpp>
+#include <engine/task/task_processor.hpp>
 #include <utils/check_syscall.hpp>
 
 USERVER_NAMESPACE_BEGIN
