@@ -73,9 +73,27 @@ public:
 
     int Fd() const noexcept { return poller_.GetFd(); }
 
-    [[nodiscard]] bool Wait(Deadline deadline) { return poller_.Wait(deadline).has_value(); }
+    [[nodiscard]] bool Wait(Deadline deadline) {
+#ifdef __linux__
+        if (is_ready_.load(std::memory_order_acquire)) {
+            return true;
+        }
+#endif
+        bool result = poller_.Wait(deadline).has_value();
+#ifdef __linux__
+        if (result) {
+            is_ready_.store(true, std::memory_order_release);
+        }
+#endif
+        return result;
+    }
 
-    void ResetReady() noexcept { poller_.ResetReady(); }
+    void ResetReady() noexcept { 
+#ifdef __linux__
+        is_ready_.store(false, std::memory_order_release);
+#endif
+        poller_.ResetReady();
+    }
 
     // (IoFunc*)(int, void*, size_t), e.g. read
     template <typename IoFunc, typename... Context>
@@ -105,7 +123,12 @@ public:
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
 
     // For epoll integration - allows sockets to wake up waiters
-    void NotifyReady() { WakeupWaiters(); }
+    void NotifyReady() {
+#ifdef __linux__
+        is_ready_.store(true, std::memory_order_release);
+#endif
+        WakeupWaiters();
+    }
 
 private:
     friend class FdControl;

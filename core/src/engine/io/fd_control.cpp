@@ -102,9 +102,11 @@ void FdControl::Close() {
     if (!IsValid()) return;
     const auto fd = Fd();
 #ifdef __linux__
-     // We need to wake up any waiters before closing the fd
-     read_.WakeupWaiters();
-     write_.WakeupWaiters();
+     // Notify waiters before closing the fd
+    read_.ResetReady();
+    write_.ResetReady();
+    read_.NotifyReady();
+    write_.NotifyReady();
 #endif
     Invalidate();
     if (fd < 0) return;

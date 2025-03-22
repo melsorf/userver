@@ -37,8 +37,6 @@ Pipe::Pipe() {
     writer = PipeWriter(pipefd[1]);
     write_guard.Release();
 
-    reader.fd_control_->Read().ResetReady();
-    reader.fd_control_->Read().NotifyReady();
     writer.fd_control_->Write().ResetReady();
     writer.fd_control_->Write().NotifyReady();
 }
@@ -71,6 +69,7 @@ size_t PipeReader::ReadAll(void* buf, size_t len, Deadline deadline) {
         throw IoException("Attempt to ReadAll from closed pipe end");
     }
     auto& dir = fd_control_->Read();
+    dir.ResetReady();
     impl::Direction::SingleUserGuard guard(dir);
     return dir.PerformIo(guard, &::read, buf, len, impl::TransferMode::kWhole, deadline, "ReadAll from pipe");
 }
@@ -106,6 +105,7 @@ size_t PipeWriter::WriteAll(const void* buf, size_t len, Deadline deadline) {
         throw IoException("Attempt to WriteAll to closed pipe end");
     }
     auto& dir = fd_control_->Write();
+    dir.ResetReady(); 
     impl::Direction::SingleUserGuard guard(dir);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     void* nonconst_buf = const_cast<void*>(buf);
