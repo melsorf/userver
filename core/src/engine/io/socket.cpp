@@ -539,15 +539,6 @@ void Socket::RegisterWithEpoll() {
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
         
-        // Create a shared_ptr to track this socket's lifetime
-        // Use a struct to avoid adding shared_ptr support to Socket class
-        struct SocketRef {
-            Socket* socket;
-            impl::FdControlHolder* fd_control;
-            int fd;
-            engine::TaskProcessor* task_processor;
-        };
-        
         // This shared_ptr will be kept alive as long as the callback exists
         auto socket_ref = std::make_shared<SocketRef>(
             SocketRef{this, &fd_control_, socket_fd, registered_task_processor_});
