@@ -511,20 +511,25 @@ void Socket::SetOption(int layer, int optname, int optval) {
 
 #ifdef __linux__
 Socket::~Socket() {
-    auto thread_id = epoll_thread_id_;
+    aauto thread_id = epoll_thread_id_;
+    auto processor = registered_task_processor_;
+    int socket_fd = -1;
+    
+    // Get the fd before we reset other members
+    if (IsValid()) {
+        socket_fd = Fd();
+    }
+    
+    // Reset the epoll registration data
     epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    registered_task_processor_ = nullptr;
     
-    // First, reset the reference so that the callback cannot access the object.
-    auto socket_ref = std::move(epoll_socket_ref_);
+    // Clear the socket_ref - this will eventually clear all callbacks
+    epoll_socket_ref_.reset();
     
-    if (thread_id != std::numeric_limits<std::size_t>::max()) {
+    if (thread_id != std::numeric_limits<std::size_t>::max() && processor && socket_fd >= 0) {
         try {
-            if (registered_task_processor_) {
-                int fd = socket_ref ? socket_ref->fd : -1;
-                if (fd >= 0) {
-                    registered_task_processor_->UnregisterFd(fd);
-                }
-            }
+            processor->UnregisterFd(socket_fd);
         } catch (...) {
             LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
         }
@@ -541,7 +546,7 @@ void Socket::RegisterWithEpoll() {
         
         // This shared_ptr will be kept alive as long as the callback exists
         auto socket_ref = std::make_shared<SocketRef>(
-            SocketRef{this, &fd_control_, socket_fd, registered_task_processor_});
+            SocketRef{socket_fd, &fd_control_, registered_task_processor_});
         
         // Use weak_ptr in the callback to safely check if the socket still exists
         auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
