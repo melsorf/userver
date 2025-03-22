@@ -84,7 +84,6 @@ FdControlHolder FdControl::Adopt(int fd) {
     // Configure for epoll mode if available
     bool use_epoll = false;
     try {
-        if (current_task::ShouldCancel()) return fd_control;
         auto& task_processor = current_task::GetTaskProcessor();
         use_epoll = task_processor.IsEpollModeEnabled();
     } catch (...) {
@@ -93,8 +92,9 @@ FdControlHolder FdControl::Adopt(int fd) {
     
     fd_control->read_.SetEpollMode(use_epoll);
     fd_control->write_.SetEpollMode(use_epoll);
+
+    fd_control->write_.NotifyReady();
     
-    return fd_control;
     return fd_control;
 }
 
