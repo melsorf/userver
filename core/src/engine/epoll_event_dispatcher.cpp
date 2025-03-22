@@ -401,7 +401,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             if (callback_info.callback) {
                 uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (event_mask) {
-                    /*
                     bool should_call = true;
                     int fd_to_unregister = -1;
                     {
@@ -419,7 +418,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                     }
                     
                     if (should_call) {
-                    */
                         try {
                             callback_info.callback(event_mask);
                         } catch (const std::exception& ex) {
@@ -427,7 +425,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                         } catch (...) {
                             LOG_ERROR() << "Unknown exception in fd callback";
                         }
-                    //}
+                    }
                 }
             } else if (fd >= 0) {
                 // We received an event for a file descriptor with no registered callback
