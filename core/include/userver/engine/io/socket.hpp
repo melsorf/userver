@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 
 #include <initializer_list>
-#include <atomic>
 
 #include <userver/engine/deadline.hpp>
 #include <userver/engine/io/common.hpp>
@@ -39,8 +38,7 @@ enum class SocketType {
 /// thread-safe to concurrently write to socket. However it is safe to
 /// concurrently read and write into socket:
 /// @snippet src/engine/io/socket_test.cpp send self concurrent
-class [[nodiscard]] Socket final : public RwBase,
-                                    public std::enable_shared_from_this<Socket> {
+class [[nodiscard]] Socket final : public RwBase {
 public:
     struct RecvFromResult {
         size_t bytes_received{0};
@@ -193,14 +191,6 @@ public:
 
 #ifdef __linux__
     ~Socket();
-    void NotifyIoReady(uint32_t events);
-
-    struct CallbackState {
-        int fd;
-        std::atomic<bool> read_ready{false};
-        std::atomic<bool> write_ready{false};
-        std::weak_ptr<Socket> socket_weak;
-    };
 #endif
 
 private:
@@ -211,8 +201,14 @@ private:
     Sockaddr sockname_;
 
 #ifdef __linux__
+    struct SocketRef {
+        Socket* socket;
+        impl::FdControlHolder* fd_control;
+        int fd;
+        engine::TaskProcessor* task_processor;
+    };
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
-    std::shared_ptr<CallbackState> epoll_socket_ref_;
+    std::shared_ptr<SocketRef> epoll_socket_ref_;
     // Register this socket with the epoll-based event dispatcher
     void RegisterWithEpoll();
     // Unregister this socket from the epoll-based event dispatcher

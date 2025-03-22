@@ -100,9 +100,13 @@ FdControlHolder FdControl::Adopt(int fd) {
 
 void FdControl::Close() {
     if (!IsValid()) return;
-    Invalidate();
-
     const auto fd = Fd();
+#ifdef __linux__
+     // We need to wake up any waiters before closing the fd
+     read_.WakeupWaiters();
+     write_.WakeupWaiters();
+#endif
+    Invalidate();
     if (fd < 0) return;
     if (::close(fd) == -1) {
         const auto error_code = errno;
@@ -110,9 +114,6 @@ void FdControl::Close() {
         UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
         LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
     }
-
-    read_.WakeupWaiters();
-    write_.WakeupWaiters();
 }
 
 void FdControl::Invalidate() {

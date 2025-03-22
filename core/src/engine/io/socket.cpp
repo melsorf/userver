@@ -232,29 +232,11 @@ void Socket::Listen(int backlog) {
 
 bool Socket::WaitReadable(Deadline deadline) {
     UASSERT(IsValid());
-#ifdef __linux__
-    if (epoll_socket_ref_) {
-        auto state = dynamic_cast<CallbackState*>(epoll_socket_ref_.get());
-        if (state && state->read_ready.load(std::memory_order_acquire)) {
-            state->read_ready.store(false, std::memory_order_release);
-            return true;
-        }
-    }
-#endif
     return fd_control_->Read().Wait(deadline);
 }
 
 bool Socket::WaitWriteable(Deadline deadline) {
     UASSERT(IsValid());
-#ifdef __linux__
-    if (epoll_socket_ref_) {
-        auto state = dynamic_cast<CallbackState*>(epoll_socket_ref_.get());
-        if (state && state->write_ready.load(std::memory_order_acquire)) {
-            state->write_ready.store(false, std::memory_order_release);
-            return true;
-        }
-    }
-#endif
     return fd_control_->Write().Wait(deadline);
 }
 
@@ -529,29 +511,23 @@ void Socket::SetOption(int layer, int optname, int optval) {
 
 #ifdef __linux__
 Socket::~Socket() {
-    try {
-        auto thread_id = epoll_thread_id_;
-        auto processor = registered_task_processor_;
-        auto ref = std::move(epoll_socket_ref_);
-
-        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
-        registered_task_processor_ = nullptr;
-        
-        if (thread_id != std::numeric_limits<std::size_t>::max() && processor) {
-            int fd = -1;
-            if (ref) {
-                fd = dynamic_cast<CallbackState*>(ref.get())->fd;
-            }
-            if (fd >= 0) {
-                try {
-                    processor->UnregisterFd(fd);
-                } catch (const std::exception& ex) {
-                    LOG_ERROR() << "Failed to unregister socket from epoll: " << ex.what();
+    auto thread_id = epoll_thread_id_;
+    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    
+    // First, reset the reference so that the callback cannot access the object.
+    auto socket_ref = std::move(epoll_socket_ref_);
+    
+    if (thread_id != std::numeric_limits<std::size_t>::max()) {
+        try {
+            if (registered_task_processor_) {
+                int fd = socket_ref ? socket_ref->fd : -1;
+                if (fd >= 0) {
+                    registered_task_processor_->UnregisterFd(fd);
                 }
             }
+        } catch (...) {
+            LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
         }
-    } catch (...) {
-        // Destructor shouldn't throw
     }
 }
 
@@ -563,57 +539,45 @@ void Socket::RegisterWithEpoll() {
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
         
-        // Create a copy of the necessary data so that we don't have to access this
-        // when the callback is called
-        auto state = std::make_shared<CallbackState>();
-        state->fd = socket_fd;
-        state->read_ready.store(false, std::memory_order_relaxed);
-        state->write_ready.store(false, std::memory_order_relaxed);
-
-        auto self_weak = std::weak_ptr<Socket>(shared_from_this());
-        state->socket_weak = self_weak;
-
-        auto weak_state = std::weak_ptr<CallbackState>(state);
+        // This shared_ptr will be kept alive as long as the callback exists
+        auto socket_ref = std::make_shared<SocketRef>(
+            SocketRef{this, &fd_control_, socket_fd, registered_task_processor_});
+        
+        // Use weak_ptr in the callback to safely check if the socket still exists
+        auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
         
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
-            EPOLLIN | EPOLLOUT,
-            [weak_state](uint32_t events) {
+            EPOLLIN | EPOLLOUT | EPOLLET,
+            [weak_ref](uint32_t events) {
                 // Try to get a valid reference to the socket
-                if (auto state_ptr = weak_state.lock()) {
-                    if (events & EPOLLIN) {
-                        state_ptr->read_ready.store(true, std::memory_order_release);
-                    }
-                    if (events & EPOLLOUT) {
-                        state_ptr->write_ready.store(true, std::memory_order_release);
-                    }
-                    if (auto socket_ptr = state_ptr->socket_weak.lock()) {
-                        socket_ptr->NotifyIoReady(events);
+                if (auto ref = weak_ref.lock()) {
+                    Socket* socket = ref->socket;
+                    
+                    // Double-check that the socket and its internal state are still valid
+                    // Also verify that we're working with the same file descriptor
+                    if (socket && socket->IsValid() && socket->Fd() == ref->fd) {
+                        auto& fd_control = *(ref->fd_control);
+                        
+                        // Process the events
+                        if (events & EPOLLIN) {
+                            fd_control->Read().NotifyReady();
+                        }
+                        if (events & EPOLLOUT) {
+                            fd_control->Write().NotifyReady();
+                        }
+                        if (events & (EPOLLERR | EPOLLHUP)) {
+                            fd_control->Read().NotifyReady();
+                            fd_control->Write().NotifyReady();
+                        }
                     }
                 }
                 // If we can't get a reference, the socket has been destroyed
                 // and we don't need to do anything
-            }, weak_state);
-            epoll_socket_ref_ = std::move(state);
-            NotifyIoReady(EPOLLOUT);
+            }, weak_ref);
+            epoll_socket_ref_ = std::move(socket_ref);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
-    }
-}
-
-void Socket::NotifyIoReady(uint32_t events) {
-    if (!fd_control_) return;
-    
-    if ((events & EPOLLIN) || 
-        (events & (EPOLLERR | EPOLLHUP)) || 
-        (epoll_socket_ref_ && dynamic_cast<CallbackState*>(epoll_socket_ref_.get())->read_ready.load(std::memory_order_acquire))) {
-        fd_control_->Read().NotifyReady();
-    }
-    
-    if ((events & EPOLLOUT) || 
-        (events & (EPOLLERR | EPOLLHUP)) || 
-        (epoll_socket_ref_ && dynamic_cast<CallbackState*>(epoll_socket_ref_.get())->write_ready.load(std::memory_order_acquire))) {
-        fd_control_->Write().NotifyReady();
     }
 }
 

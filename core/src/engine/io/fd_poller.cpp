@@ -268,7 +268,7 @@ void FdPoller::Impl::IoWatcherCb(struct ev_loop*, ev_io* watcher, int) noexcept 
     // Otherwise, the coroutine may close watcher_'s fd before watcher_ is stopped.
     const auto guard = self->watcher_.StopWithinEvCallback();
 
-    self->events_that_happened_.store(GetUserMode(ev_events), std::memory_order_relaxed);
+    self->events_that_happened_.store(GetUserMode(ev_events), std::memory_order_release);
     self->WakeupWaiters();
 }
 
@@ -363,7 +363,11 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
     {
         std::lock_guard<std::mutex> lock(epoll_mutex_);
         if (use_epoll_ && fd_ >= 0 && registered_fd_index_ && task_processor_) {
-            task_processor_->UnregisterFd(fd_);
+            try {
+                task_processor_->UnregisterFd(fd_);
+            } catch (...) {
+                LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
+            }
             registered_fd_index_.reset();
             use_epoll_ = false;
             task_processor_ = nullptr;
@@ -408,7 +412,6 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     epoll_registered = true;
                 }
             }
-            // else: failed to register fd, will fallback to watcher_
         }
     }
 #endif
@@ -420,7 +423,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         fd_ = fd;
 #endif
     }
-    state_ = State::kReadyToUse;
+    state_.store(State::kReadyToUse, std::memory_order_release);
 }
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }

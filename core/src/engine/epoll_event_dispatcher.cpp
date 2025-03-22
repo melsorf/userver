@@ -374,12 +374,28 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             
             // Handle other fd events (I/O, etc.)
             FdCallbackInfo callback_info;
+            std::size_t correct_thread_index = thread_index;
+            bool forward_to_other_thread = false;
             {
                 std::lock_guard<std::mutex> lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end() && it->second.owner_thread == thread_index) {
-                    callback_info = it->second;
+                if (it != fd_callbacks_.end()) {
+                    if (it->second.owner_thread == thread_index) {
+                        callback_info = it->second;
+                    } else {
+                        // Event delivered to wrong thread, forward to correct thread
+                        correct_thread_index = it->second.owner_thread;
+                        forward_to_other_thread = true;
+                    }
                 }
+            }
+
+            if (forward_to_other_thread) {
+                // Wake up the correct thread to handle this event
+                if (correct_thread_index < thread_count_) {
+                    PostEvent(correct_thread_index);
+                }
+                continue;
             }
             
             if (callback_info.callback) {
@@ -411,8 +427,11 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                         }
                     }
                 }
-            } else {
-                LOG_DEBUG() << "Event received for fd " << fd << " with no registered callback";
+            } else if (fd >= 0) {
+                // We received an event for a file descriptor with no registered callback
+                // This can happen if the fd was just unregistered - remove it from epoll
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                LOG_DEBUG() << "Removed orphaned fd " << fd << " from epoll";
             }
         }
     }
