@@ -515,6 +515,7 @@ Socket::~Socket() {
             UnregisterFromEpoll();
         } catch (...) {
             // Ignore exceptions in destructor
+            LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
         }
     }
     // Clear socket reference to prevent any callbacks
@@ -526,6 +527,7 @@ void Socket::RegisterWithEpoll() {
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
+        registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
         
         // Create a shared_ptr to track this socket's lifetime
@@ -534,11 +536,12 @@ void Socket::RegisterWithEpoll() {
             Socket* socket;
             impl::FdControlHolder* fd_control;
             int fd;
+            engine::TaskProcessor* task_processor;
         };
         
         // This shared_ptr will be kept alive as long as the callback exists
         auto socket_ref = std::make_shared<SocketRef>(
-            SocketRef{this, &fd_control_, socket_fd});
+            SocketRef{this, &fd_control_, socket_fd, registered_task_processor_});
         
         // Use weak_ptr in the callback to safely check if the socket still exists
         auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
@@ -572,6 +575,7 @@ void Socket::RegisterWithEpoll() {
                 // If we can't get a reference, the socket has been destroyed
                 // and we don't need to do anything
             }, weak_ref);
+            epoll_socket_ref_ = std::move(socket_ref);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
     }
@@ -585,13 +589,24 @@ void Socket::UnregisterFromEpoll() {
     try {
         int fd = Fd();
         if (fd >= 0) {
-            engine::current_task::GetTaskProcessor().UnregisterFd(fd);
+            if (registered_task_processor_) {
+                registered_task_processor_->UnregisterFd(fd);
+            } else {
+                try {
+                    engine::current_task::GetTaskProcessor().UnregisterFd(fd);
+                } catch (const std::exception& ex) {
+                    LOG_WARNING() << "Failed to get current task processor for fd " << fd 
+                                << ": " << ex.what() 
+                                << ", socket might stay registered in epoll";
+                }
+            }
         }
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to unregister socket from epoll: " << ex.what();
     }
     
     epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    registered_task_processor_ = nullptr;
     epoll_socket_ref_.reset();
 }
 #endif

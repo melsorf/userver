@@ -203,6 +203,7 @@ private:
     void RegisterWithEpoll();
     // Unregister this socket from the epoll-based event dispatcher
     void UnregisterFromEpoll();
+    engine::TaskProcessor* registered_task_processor_{nullptr};
 #endif
 };
 
