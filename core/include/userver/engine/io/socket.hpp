@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 
 #include <initializer_list>
+#include <atomic>
 
 #include <userver/engine/deadline.hpp>
 #include <userver/engine/io/common.hpp>
