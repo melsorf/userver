@@ -547,7 +547,7 @@ void Socket::RegisterWithEpoll() {
         
         // Create a copy of the necessary data so that we don't have to access this
         // when the callback is called
-        auto state = std::make_shared<CallbackState>(CallbackState{fd_control_, socket_fd});
+        auto state = std::make_shared<CallbackState>(CallbackState{impl::FdControl::Share(fd_control_.get()), socket_fd});
         auto weak_state = std::weak_ptr<CallbackState>(state);
         
         epoll_thread_id_ = task_processor.RegisterFd(

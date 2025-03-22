@@ -193,7 +193,7 @@ public:
     ~Socket();
 
     struct CallbackState {
-        impl::FdControlHolder* fd_control;
+        impl::FdControlHolder fd_control;
         int fd;
     };
 #endif
