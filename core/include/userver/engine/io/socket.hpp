@@ -17,6 +17,10 @@ struct iovec;
 
 USERVER_NAMESPACE_BEGIN
 
+namespace engine {
+class TaskProcessor;
+}  // namespace engine
+
 namespace engine::io {
 
 /// Socket type

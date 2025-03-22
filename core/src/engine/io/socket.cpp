@@ -511,16 +511,24 @@ void Socket::SetOption(int layer, int optname, int optval) {
 
 #ifdef __linux__
 Socket::~Socket() {
-    if (epoll_thread_id_ != std::numeric_limits<std::size_t>::max()) {
+    auto thread_id = epoll_thread_id_;
+    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    
+    // First, reset the reference so that the callback cannot access the object.
+    auto socket_ref = std::move(epoll_socket_ref_);
+    
+    if (thread_id != std::numeric_limits<std::size_t>::max()) {
         try {
-            UnregisterFromEpoll();
+            if (registered_task_processor_) {
+                int fd = socket_ref ? socket_ref->fd : -1;
+                if (fd >= 0) {
+                    registered_task_processor_->UnregisterFd(fd);
+                }
+            }
         } catch (...) {
-            // Ignore exceptions in destructor
             LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
         }
     }
-    // Clear socket reference to prevent any callbacks
-    epoll_socket_ref_.reset();
 }
 
 void Socket::RegisterWithEpoll() {

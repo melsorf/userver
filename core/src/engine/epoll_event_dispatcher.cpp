@@ -377,14 +377,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             {
                 std::lock_guard<std::mutex> lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end()) {
-                    if (it->second.owner_thread == thread_index) {
-                        callback_info = it->second;
-                    } else {
-                        LOG_WARNING() << "Event received on thread " << thread_index 
-                                     << " for fd " << fd << " registered on thread " 
-                                     << it->second.owner_thread;
-                    }
+                if (it != fd_callbacks_.end() && it->second.owner_thread == thread_index) {
+                    callback_info = it->second;
                 }
             }
             
@@ -392,14 +386,19 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (event_mask) {
                     bool should_call = true;
+                    int fd_to_unregister = -1;
                     {
                         std::lock_guard<std::mutex> registry_lock(registry_mutex_);
                         auto owner_it = fd_to_owner_.find(fd);
                         if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
                             should_call = false;
-                            LOG_DEBUG() << "Owner of fd " << fd << " expired, removing fd from epoll";
-                            UnregisterFd(fd);
+                            fd_to_unregister = fd;
                         }
+                    }
+
+                    if (fd_to_unregister >= 0) {
+                        LOG_DEBUG() << "Owner of fd " << fd_to_unregister << " expired, removing fd from epoll";
+                        UnregisterFd(fd_to_unregister);
                     }
                     
                     if (should_call) {

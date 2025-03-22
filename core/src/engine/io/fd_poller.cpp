@@ -173,9 +173,21 @@ FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watc
 
 FdPoller::Impl::~Impl() {
 #ifdef __linux__
-    if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
+    int fd_to_unregister = -1;
+    engine::TaskProcessor* processor = nullptr;
+    
+    {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
+        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
+            fd_to_unregister = fd_;
+            processor = task_processor_;
+            registered_fd_index_.reset();
+        }
+    }
+    
+    if (fd_to_unregister >= 0 && processor) {
         try {
-            task_processor_->UnregisterFd(fd_);
+            processor->UnregisterFd(fd_to_unregister);
         } catch (...) {
             // Destructors shouldn't throw
         }
@@ -213,20 +225,25 @@ void FdPoller::Impl::Invalidate() {
     UASSERT(current_state == FdPoller::State::kReadyToUse);
 
 #ifdef __linux__
+    int fd_to_unregister = -1;
+    engine::TaskProcessor* processor = nullptr;
     {
         std::lock_guard<std::mutex> lock(epoll_mutex_);
-        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
-            try {
-                task_processor_->UnregisterFd(fd_);
-            } catch (...) {
-                LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
-            }
-            registered_fd_index_.reset();
+        if (use_epoll_ && fd_ >= 0 &&task_processor_ && registered_fd_index_) {
+            fd_to_unregister = fd_;
+            task_processor = task_processor_;
         }
-        // Reset fd_ and use_epoll_ regardless of success
+        registered_fd_index_.reset();
         fd_ = -1;
         use_epoll_ = false;
         task_processor_ = nullptr;
+    }
+    if (fd_to_unregister >= 0 && processor) {
+        try {
+            processor->UnregisterFd(fd_to_unregister);
+        } catch (...) {
+            LOG_ERROR() << "Failed to unregister fd " << fd_to_unregister << " from epoll";
+        }
     }
 #endif
 
