@@ -232,11 +232,29 @@ void Socket::Listen(int backlog) {
 
 bool Socket::WaitReadable(Deadline deadline) {
     UASSERT(IsValid());
+#ifdef __linux__
+    if (epoll_socket_ref_) {
+        auto state = dynamic_cast<CallbackState*>(epoll_socket_ref_.get());
+        if (state && state->read_ready.load(std::memory_order_acquire)) {
+            state->read_ready.store(false, std::memory_order_release);
+            return true;
+        }
+    }
+#endif
     return fd_control_->Read().Wait(deadline);
 }
 
 bool Socket::WaitWriteable(Deadline deadline) {
     UASSERT(IsValid());
+#ifdef __linux__
+    if (epoll_socket_ref_) {
+        auto state = dynamic_cast<CallbackState*>(epoll_socket_ref_.get());
+        if (state && state->write_ready.load(std::memory_order_acquire)) {
+            state->write_ready.store(false, std::memory_order_release);
+            return true;
+        }
+    }
+#endif
     return fd_control_->Write().Wait(deadline);
 }
 
@@ -549,6 +567,8 @@ void Socket::RegisterWithEpoll() {
         // when the callback is called
         auto state = std::make_shared<CallbackState>();
         state->fd = socket_fd;
+        state->read_ready.store(false, std::memory_order_relaxed);
+        state->write_ready.store(false, std::memory_order_relaxed);
 
         auto self_weak = std::weak_ptr<Socket>(shared_from_this());
         state->socket_weak = self_weak;
@@ -557,11 +577,10 @@ void Socket::RegisterWithEpoll() {
         
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
-            EPOLLIN | EPOLLOUT | EPOLLET,
+            EPOLLIN | EPOLLOUT,
             [weak_state](uint32_t events) {
                 // Try to get a valid reference to the socket
                 if (auto state_ptr = weak_state.lock()) {
-
                     if (events & EPOLLIN) {
                         state_ptr->read_ready.store(true, std::memory_order_release);
                     }
@@ -576,6 +595,7 @@ void Socket::RegisterWithEpoll() {
                 // and we don't need to do anything
             }, weak_state);
             epoll_socket_ref_ = std::move(state);
+            NotifyIoReady(EPOLLOUT);
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
     }
@@ -584,14 +604,15 @@ void Socket::RegisterWithEpoll() {
 void Socket::NotifyIoReady(uint32_t events) {
     if (!fd_control_) return;
     
-    if (events & EPOLLIN) {
+    if ((events & EPOLLIN) || 
+        (events & (EPOLLERR | EPOLLHUP)) || 
+        (epoll_socket_ref_ && dynamic_cast<CallbackState*>(epoll_socket_ref_.get())->read_ready.load(std::memory_order_acquire))) {
         fd_control_->Read().NotifyReady();
     }
-    if (events & EPOLLOUT) {
-        fd_control_->Write().NotifyReady();
-    }
-    if (events & (EPOLLERR | EPOLLHUP)) {
-        fd_control_->Read().NotifyReady();
+    
+    if ((events & EPOLLOUT) || 
+        (events & (EPOLLERR | EPOLLHUP)) || 
+        (epoll_socket_ref_ && dynamic_cast<CallbackState*>(epoll_socket_ref_.get())->write_ready.load(std::memory_order_acquire))) {
         fd_control_->Write().NotifyReady();
     }
 }
