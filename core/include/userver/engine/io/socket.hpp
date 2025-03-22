@@ -203,7 +203,7 @@ private:
 #ifdef __linux__
     struct SocketRef {
         int fd;
-        impl::FdControlHolder* fd_control;
+        impl::FdControlHolder fd_control;
         engine::TaskProcessor* task_processor;
     };
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};

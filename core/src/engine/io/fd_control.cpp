@@ -102,9 +102,7 @@ void FdControl::Close() {
     if (!IsValid()) return;
     const auto fd = Fd();
 #ifdef __linux__
-     // Notify waiters before closing the fd
-    read_.ResetReady();
-    write_.ResetReady();
+     // Notify waiters before closing
     read_.NotifyReady();
     write_.NotifyReady();
 #endif

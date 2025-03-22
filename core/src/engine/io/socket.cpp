@@ -544,7 +544,7 @@ void Socket::RegisterWithEpoll() {
         
         // This shared_ptr will be kept alive as long as the callback exists
         auto socket_ref = std::make_shared<SocketRef>(
-            SocketRef{socket_fd, &fd_control_, registered_task_processor_});
+            SocketRef{socket_fd, fd_control_, registered_task_processor_});
         
         // Use weak_ptr in the callback to safely check if the socket still exists
         auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
@@ -555,21 +555,21 @@ void Socket::RegisterWithEpoll() {
             [weak_ref](uint32_t events) {
                 // Try to get a valid reference to the socket
                 if (auto ref = weak_ref.lock()) {
-                    auto fd_control_ptr = ref->fd_control;
+                    auto& fd_control_holder = ref->fd_control;
                     int fd = ref->fd;
                     
                     // Verify the FdControlHolder is still valid and points to the same fd
-                    if (fd_control_ptr && *fd_control_ptr && fd == (*fd_control_ptr)->Fd()) {
+                    if (fd_control_holder && fd == fd_control_holder->Fd()) {
                         // Process the events
                         if (events & EPOLLIN) {
-                            (*fd_control_ptr)->Read().NotifyReady();
+                            fd_control_holder->Read().NotifyReady();
                         }
                         if (events & EPOLLOUT) {
-                            (*fd_control_ptr)->Write().NotifyReady();
+                            fd_control_holder->Write().NotifyReady();
                         }
                         if (events & (EPOLLERR | EPOLLHUP)) {
-                            (*fd_control_ptr)->Read().NotifyReady();
-                            (*fd_control_ptr)->Write().NotifyReady();
+                            fd_control_holder->Read().NotifyReady();
+                            fd_control_holder->Write().NotifyReady();
                         }
                     }
                 }
