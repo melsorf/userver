@@ -552,13 +552,12 @@ void Socket::RegisterWithEpoll() {
             [weak_ref](uint32_t events) {
                 // Try to get a valid reference to the socket
                 if (auto ref = weak_ref.lock()) {
-                    Socket* socket = ref->socket;
+                    auto& fd_control = ref->fd_control;
+                    int fd = ref->fd;
                     
                     // Double-check that the socket and its internal state are still valid
                     // Also verify that we're working with the same file descriptor
-                    if (socket && socket->IsValid() && socket->Fd() == ref->fd) {
-                        auto& fd_control = *(ref->fd_control);
-                        
+                    if (fd_control && fd == fd_control->Fd()) {
                         // Process the events
                         if (events & EPOLLIN) {
                             fd_control->Read().NotifyReady();
