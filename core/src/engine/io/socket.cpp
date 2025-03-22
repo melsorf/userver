@@ -475,8 +475,8 @@ int Socket::Release() && noexcept {
 void Socket::Close() { 
 #ifdef __linux__
     UnregisterFromEpoll();
-#endif
     epoll_socket_ref_.reset();
+#endif
     fd_control_.reset(); 
 }
 
@@ -512,16 +512,13 @@ void Socket::SetOption(int layer, int optname, int optval) {
 Socket::~Socket() {
     if (epoll_thread_id_ != std::numeric_limits<std::size_t>::max()) {
         try {
-            auto& task_processor = engine::current_task::GetTaskProcessor();
-            if (IsValid() && Fd() >= 0) {
-                task_processor.UnregisterFd(Fd());
-            }
+            UnregisterFromEpoll();
         } catch (...) {
-            // Ignore exceptions during destruction
+            // Ignore exceptions in destructor
         }
-        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
     }
-    // fd_control_ will be destroyed automatically
+    // Clear socket reference to prevent any callbacks
+    epoll_socket_ref_.reset();
 }
 
 void Socket::RegisterWithEpoll() {
@@ -581,16 +578,21 @@ void Socket::RegisterWithEpoll() {
 }
 
 void Socket::UnregisterFromEpoll() {
-    if (!IsValid() || Fd() < 0) return;
-    
+    if (epoll_thread_id_ == std::numeric_limits<std::size_t>::max() || !IsValid()) {
+        return;  // Already unregistered or socket invalid
+    }
+
     try {
-        auto& task_processor = engine::current_task::GetTaskProcessor();
-        task_processor.UnregisterFd(Fd());
-        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
-        epoll_socket_ref_.reset();
+        int fd = Fd();
+        if (fd >= 0) {
+            engine::current_task::GetTaskProcessor().UnregisterFd(fd);
+        }
     } catch (const std::exception& ex) {
         LOG_DEBUG() << "Failed to unregister socket from epoll: " << ex.what();
     }
+    
+    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    epoll_socket_ref_.reset();
 }
 #endif
 
