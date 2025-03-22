@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include <userver/engine/sleep.hpp> 
 #include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -100,13 +101,14 @@ FdControlHolder FdControl::Adopt(int fd) {
 
 void FdControl::Close() {
     if (!IsValid()) return;
-    Invalidate();
     const auto fd = Fd();
 #ifdef __linux__
      // Notify waiters before closing
     read_.NotifyReady();
     write_.NotifyReady();
 #endif
+    engine::SleepFor(std::chrono::milliseconds(1));
+    Invalidate();
     if (fd < 0) return;
     if (::close(fd) == -1) {
         const auto error_code = errno;
