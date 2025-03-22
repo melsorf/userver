@@ -7,7 +7,6 @@
 #include <memory>
 #include <stdexcept>
 
-#include <userver/engine/sleep.hpp> 
 #include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -107,7 +106,6 @@ void FdControl::Close() {
     read_.NotifyReady();
     write_.NotifyReady();
 #endif
-    engine::SleepFor(std::chrono::milliseconds(1));
     Invalidate();
     if (fd < 0) return;
     if (::close(fd) == -1) {

@@ -5,7 +5,6 @@
 
 #include <array>
 
-#include <userver/engine/sleep.hpp> 
 #include <userver/engine/io/exception.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
@@ -87,7 +86,6 @@ void PipeReader::Close() {
 #ifdef __linux__
     // Always notify waiters before closing
     if (fd_control_) {
-        engine::SleepFor(std::chrono::milliseconds(1));
         fd_control_->Read().NotifyReady();
     }
 #endif
@@ -135,7 +133,6 @@ void PipeWriter::Close() {
     // Always notify waiters before closing
     if (fd_control_) {
         fd_control_->Write().NotifyReady();
-        engine::SleepFor(std::chrono::milliseconds(1));
     }
 #endif
     fd_control_.reset();
