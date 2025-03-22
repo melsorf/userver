@@ -6,6 +6,7 @@
 #include <array>
 
 #include <userver/engine/io/exception.hpp>
+#include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
 
@@ -35,9 +36,18 @@ Pipe::Pipe() {
     read_guard.Release();
     writer = PipeWriter(pipefd[1]);
     write_guard.Release();
+
+    reader.fd_control_->Read().ResetReady();
+    reader.fd_control_->Read().NotifyReady();
+    writer.fd_control_->Write().ResetReady();
+    writer.fd_control_->Write().NotifyReady();
 }
 
-PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
+    if (fd_control_) {
+        fd_control_->Read().SetEpollMode(true);
+    }
+}
 
 bool PipeReader::IsValid() const { return !!fd_control_; }
 
@@ -51,6 +61,7 @@ size_t PipeReader::ReadSome(void* buf, size_t len, Deadline deadline) {
         throw IoException("Attempt to ReadSome from closed pipe end");
     }
     auto& dir = fd_control_->Read();
+    dir.ResetReady();
     impl::Direction::SingleUserGuard guard(dir);
     return dir.PerformIo(guard, &::read, buf, len, impl::TransferMode::kPartial, deadline, "ReadSome from pipe");
 }
@@ -77,7 +88,11 @@ int PipeReader::Release() noexcept {
 
 void PipeReader::Close() { fd_control_.reset(); }
 
-PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
+    if (fd_control_) {
+        fd_control_->Write().SetEpollMode(true);
+    }
+}
 
 bool PipeWriter::IsValid() const { return !!fd_control_; }
 
@@ -108,7 +123,11 @@ int PipeWriter::Release() noexcept {
     return fd;
 }
 
-void PipeWriter::Close() { fd_control_.reset(); }
+void PipeWriter::Close() {
+    // Make sure any waiters are woken up before closing
+    fd_control_->Write().NotifyReady();
+    fd_control_.reset();
+}
 
 }  // namespace engine::io
 
