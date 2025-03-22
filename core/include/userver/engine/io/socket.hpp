@@ -195,7 +195,7 @@ public:
     struct CallbackState {
         impl::FdControlHolder* fd_control;
         int fd;
-    }
+    };
 #endif
 
 private:
