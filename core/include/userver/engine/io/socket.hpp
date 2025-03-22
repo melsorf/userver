@@ -193,6 +193,7 @@ public:
 
 #ifdef __linux__
     ~Socket();
+    void NotifyIoReady(uint32_t events);
 
     struct CallbackState {
         int fd;
