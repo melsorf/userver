@@ -48,7 +48,7 @@ public:
     std::weak_ptr<void> owner = {});
     
     // Unregister a file descriptor
-    void UnregisterFd(int fd);
+    void UnregisterFd(int fd, int specific_epoll_fd = -1);
     
     // Post an event to wake up a worker thread
     void PostEvent();
