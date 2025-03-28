@@ -206,7 +206,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
     return registration_successful ? target_thread : std::numeric_limits<std::size_t>::max();
 }
 
-void EpollEventDispatcher::UnregisterFd(int fd, int specific_epoll_fd = -1) {
+void EpollEventDispatcher::UnregisterFd(int fd, int specific_epoll_fd/* = -1*/) {
     if (fd < 0) return;
     
     size_t owner_thread = std::numeric_limits<size_t>::max();
@@ -236,6 +236,8 @@ void EpollEventDispatcher::UnregisterFd(int fd, int specific_epoll_fd = -1) {
         }
     }
 
+    // Call the callback outside the mutex lock
+    // with a full set of events to wake up all waiting tasks
     if (callback_copy) {
         try {
             LOG_DEBUG() << "Notifying waiters of fd " << fd << " before unregistering";
