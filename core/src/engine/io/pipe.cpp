@@ -42,7 +42,7 @@ Pipe::Pipe() {
 
 PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
     if (fd_control_) {
-        fd_control_->Read().SetEpollMode(true);
+        fd_control_->Read().SetEpollMode(false);
     }
 }
 
@@ -94,7 +94,7 @@ void PipeReader::Close() {
 
 PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
     if (fd_control_) {
-        fd_control_->Write().SetEpollMode(true);
+        fd_control_->Write().SetEpollMode(false);
     }
 }
 

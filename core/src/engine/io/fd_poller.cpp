@@ -158,7 +158,7 @@ struct FdPoller::Impl final
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
 #ifdef __linux__
-    bool use_epoll_{true};
+    bool use_epoll_{false};
     bool use_epoll_requested_{true}; // By default, try to use epoll when available
     int fd_{-1};
     std::optional<std::size_t> registered_fd_index_;

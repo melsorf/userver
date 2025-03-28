@@ -206,46 +206,34 @@ std::size_t EpollEventDispatcher::RegisterFd(
     return registration_successful ? target_thread : std::numeric_limits<std::size_t>::max();
 }
 
-void EpollEventDispatcher::UnregisterFd(int fd, int specific_epoll_fd/* = -1*/) {
+void EpollEventDispatcher::UnregisterFd(int fd) {
     if (fd < 0) return;
     
     size_t owner_thread = std::numeric_limits<size_t>::max();
     bool need_wakeup = false;
-    std::function<void(uint32_t)> callback_copy;
     {
         std::lock_guard<std::mutex> lock(fd_mutex_);
         auto it = fd_callbacks_.find(fd);
         if (it == fd_callbacks_.end()) {
             return;
         }
-        callback_copy = it->second.callback;
         owner_thread = it->second.owner_thread;
         // Remove callback
         fd_callbacks_.erase(it);
-
-        int epoll_fd_to_use = (specific_epoll_fd >= 0) ? specific_epoll_fd : 
-            (owner_thread < thread_count_ ? thread_epoll_fds_[owner_thread] : -1);
         
-        if (epoll_fd_to_use >= 0) {
-            int result = epoll_ctl(epoll_fd_to_use, EPOLL_CTL_DEL, fd, nullptr);
-            if (result == -1 && errno != ENOENT && errno != EBADF) {
-                LOG_ERROR() << "Failed to remove fd " << fd << " from epoll: " << strerror(errno);
-            } else {
-                need_wakeup = true;
+        if (owner_thread < thread_count_) {
+            int epoll_fd = thread_epoll_fds_[owner_thread];
+            if (epoll_fd >= 0) {
+                int result = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                if (result == -1) {
+                    if (errno != ENOENT && errno != EBADF) {
+                        LOG_ERROR() << "Failed to remove fd " << fd << " from thread epoll: " << strerror(errno);
+                    }
+                } else {
+                    // Succeeded
+                    need_wakeup = true;
+                }
             }
-        }
-    }
-
-    // Call the callback outside the mutex lock
-    // with a full set of events to wake up all waiting tasks
-    if (callback_copy) {
-        try {
-            LOG_DEBUG() << "Notifying waiters of fd " << fd << " before unregistering";
-            callback_copy(EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
-        } catch (const std::exception& ex) {
-            LOG_ERROR() << "Exception in fd callback during unregister: " << ex.what();
-        } catch (...) {
-            LOG_ERROR() << "Unknown exception in fd callback during unregister";
         }
     }
 
@@ -413,54 +401,29 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             if (callback_info.callback) {
                 uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
                 if (event_mask) {
+                    bool should_call = true;
                     int fd_to_unregister = -1;
-                    std::weak_ptr<void> owner_copy;
                     {
                         std::lock_guard<std::mutex> registry_lock(registry_mutex_);
                         auto owner_it = fd_to_owner_.find(fd);
-                        if (owner_it != fd_to_owner_.end()) {
-                            owner_copy = owner_it->second;
+                        if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
+                            should_call = false;
+                            fd_to_unregister = fd;
                         }
                     }
 
-                    if (!owner_copy.expired()) {
+                    if (fd_to_unregister >= 0) {
+                        LOG_DEBUG() << "Owner of fd " << fd_to_unregister << " expired, removing fd from epoll";
+                        UnregisterFd(fd_to_unregister);
+                    }
+                    
+                    if (should_call) {
                         try {
-                            // Store the event mask before calling the callback
-                            uint32_t event_mask_to_report = event_mask;
-                            
-                            // Call callback even for edge-triggered mode on first read readiness
-                            if ((event_mask & EPOLLIN) || (event_mask & EPOLLOUT)) {
-                                callback_info.callback(event_mask_to_report);
-                                
-                                if (fd_callbacks_.find(fd) != fd_callbacks_.end()) {
-                                    // Try to fix FdPoller.WaitAnyRead
-                                    if ((event_mask & EPOLLIN) && (fd_callbacks_[fd].requested_events & EPOLLIN)) {
-                                        callback_info.callback(EPOLLIN);
-                                    }
-                                    
-                                    if ((event_mask & EPOLLOUT) && (fd_callbacks_[fd].requested_events & EPOLLOUT)) {
-                                        callback_info.callback(EPOLLOUT);
-                                    }
-                                }
-                            } else {
-                                // Error events
-                                callback_info.callback(event_mask_to_report);
-                            }
+                            callback_info.callback(event_mask);
                         } catch (const std::exception& ex) {
                             LOG_ERROR() << "Exception in fd callback: " << ex.what();
                         } catch (...) {
                             LOG_ERROR() << "Unknown exception in fd callback";
-                        }
-                    } else {
-                        // The owner has expired, unregister the fd if it is not already unregistered
-                        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
-                        auto owner_it = fd_to_owner_.find(fd);
-                        if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
-                            fd_to_unregister = fd;
-                        }
-                        if (fd_to_unregister >= 0) {
-                            LOG_DEBUG() << "Owner of fd " << fd_to_unregister << " expired, removing fd from epoll";
-                            UnregisterFd(fd_to_unregister, epoll_fd);
                         }
                     }
                 }
