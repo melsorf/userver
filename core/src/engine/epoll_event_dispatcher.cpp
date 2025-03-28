@@ -425,7 +425,27 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
 
                     if (!owner_copy.expired()) {
                         try {
-                            callback_info.callback(event_mask);
+                            // Store the event mask before calling the callback
+                            uint32_t event_mask_to_report = event_mask;
+                            
+                            // Call callback even for edge-triggered mode on first read readiness
+                            if ((event_mask & EPOLLIN) || (event_mask & EPOLLOUT)) {
+                                callback_info.callback(event_mask_to_report);
+                                
+                                if (fd_callbacks_.find(fd) != fd_callbacks_.end()) {
+                                    // Try to fix FdPoller.WaitAnyRead
+                                    if ((event_mask & EPOLLIN) && (fd_callbacks_[fd].requested_events & EPOLLIN)) {
+                                        callback_info.callback(EPOLLIN);
+                                    }
+                                    
+                                    if ((event_mask & EPOLLOUT) && (fd_callbacks_[fd].requested_events & EPOLLOUT)) {
+                                        callback_info.callback(EPOLLOUT);
+                                    }
+                                }
+                            } else {
+                                // Error events
+                                callback_info.callback(event_mask_to_report);
+                            }
                         } catch (const std::exception& ex) {
                             LOG_ERROR() << "Exception in fd callback: " << ex.what();
                         } catch (...) {
