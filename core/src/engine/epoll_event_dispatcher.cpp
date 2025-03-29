@@ -257,8 +257,23 @@ bool EpollEventDispatcher::ModifyEpoll(std::size_t thread_index, int fd, uint32_
 void EpollEventDispatcher::ProcessOneEpollEvent(std::size_t thread_index, int fd, uint32_t events) {
     if (fd == notify_fds_[thread_index]) {
         // Just a wakeup notification, read from eventfd to clear it
-        uint64_t value;
-        read(fd, &value, sizeof(value));
+        while (true) {
+            uint64_t value;
+            int ret = read(fd, &value, sizeof(value));
+            if (ret < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // Drained all notifications
+                    break;
+                }
+                if (errno != EINTR) {
+                    LOG_ERROR() << "Error reading from eventfd: " << strerror(errno);
+                    break;
+                }
+                // EINTR - retry
+            } else {
+                // Successfully read
+            }
+        }
         return;
     }
     
@@ -315,7 +330,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         // First try to get a task without blocking
         auto task_opt = queue.PopNonBlocking();
         
-        if (task_opt) {
+        if (task_opt && *task_opt) {
             auto& task_ptr = *task_opt;
             // Process task
             bool has_failed = false;
@@ -399,7 +414,7 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     for (int spin_count = 0; spin_count < kSpinningIterations && std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
         // Check for new tasks
         auto task_opt = queue.PopNonBlocking();
-        if (task_opt) {
+        if (task_opt && *task_opt) {
             auto& task_ptr = *task_opt;
             // Go back to active state
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
