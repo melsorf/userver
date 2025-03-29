@@ -340,15 +340,27 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, pools, events);
         
         if (spin_result == SpinResult::kTaskProcessed || spin_result == SpinResult::kEventsProcessed) {
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
             continue;
         }
-        thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_relaxed);
-        thread_active_[thread_index].store(false, std::memory_order_relaxed);
-        thread_idle_since_[thread_index].store(std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+        {
+            thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_release);
+            thread_active_[thread_index].store(false, std::memory_order_release);
+            
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+            
+            thread_idle_since_[thread_index].store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_release);
+        }
         
-        
+        if (IsWakeupRequested(thread_index)) {
+            continue;
+        }
+
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+
+        thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+        thread_active_[thread_index].store(true, std::memory_order_relaxed);
         
         if (ready > 0) {
             // Process events
@@ -360,6 +372,18 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
+}
+
+bool EpollEventDispatcher::IsWakeupRequested(std::size_t thread_index) {
+    if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
+        return false;
+    }
+    uint64_t value = 0;
+    int ret = read(notify_fds_[thread_index], &value, sizeof(value));
+    if (ret > 0) {
+        return true;  // Successfully read wakeup notification  
+    }
+    return false;
 }
 
 EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
@@ -412,6 +436,7 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
         }
         std::this_thread::yield();
     }
+    thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
     return SpinResult::kSpinningFailed;
 }
 
