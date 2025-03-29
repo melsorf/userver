@@ -77,8 +77,7 @@ public:
         if (!IsValid()) {
             return false;
         }
-        auto result = poller_.Wait(deadline);
-        return result.has_value() && static_cast<bool>(*result);
+        return poller_.Wait(deadline).has_value();
     }
 
     void ResetReady() noexcept { poller_.ResetReady(); }
@@ -186,7 +185,7 @@ ErrorMode Direction::TryHandleError(
             throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
         }
         auto wait_result = poller_.Wait(deadline);
-        if (!wait_result || !*wait_result) {
+        if (!wait_result) {
             if (current_task::ShouldCancel()) {
                 throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
             } else {
