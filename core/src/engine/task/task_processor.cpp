@@ -309,6 +309,9 @@ void RegisterThreadStartedHook(std::function<void()> func) {
 }
 
 void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
+#ifdef __linux__ 
+    current_thread_index_ = index;
+#endif
     switch (config_.os_scheduling) {
         case OsScheduling::kNormal:
             break;
@@ -340,7 +343,7 @@ void TaskProcessor::ProcessTasks() noexcept {
     // Use epoll mode if enabled, otherwise fall back to regular task processing
     if (config_.use_epoll_mode && epoll_ev_dispatcher_ && std::holds_alternative<TaskQueue>(task_queue_)) {
         auto& queue = std::get<TaskQueue>(task_queue_);
-        epoll_ev_dispatcher_->ProcessEvents(impl::GetCurrentThreadIndex(), queue, pools_);
+        epoll_ev_dispatcher_->ProcessEvents(GetCurrentThreadIndex(), queue, pools_);
         return;
     }
 #endif
@@ -496,6 +499,10 @@ void TaskProcessor::UnregisterFd(int fd) {
     if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
         epoll_ev_dispatcher_->UnregisterFd(fd);
     }
+}
+
+std::size_t TaskProcessor::GetCurrentThreadIndex() noexcept {
+    return current_thread_index_;
 }
 #endif
 
