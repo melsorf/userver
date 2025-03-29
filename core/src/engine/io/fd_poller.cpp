@@ -182,6 +182,8 @@ FdPoller::Impl::~Impl() {
             fd_to_unregister = fd_;
             processor = task_processor_;
             registered_fd_index_.reset();
+            fd_ = -1;
+            task_processor_ = nullptr;
         }
     }
     
@@ -369,7 +371,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
             }
             registered_fd_index_.reset();
-            use_epoll_ = false;
+            fd_ = -1;
             task_processor_ = nullptr;
         }
     }
@@ -382,7 +384,10 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto weak_self = GetWeakFromThis();
-            auto callback = [this, kind](uint32_t events) {
+            auto callback = [weak_self, kind](uint32_t events) {
+                auto self = weak_self.lock();
+                if (!self) return;
+
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
                 
@@ -398,8 +403,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     return;
                 }
                 
-                events_that_happened_.store(userver_kind, std::memory_order_release);
-                WakeupWaiters();
+                self->events_that_happened_.store(userver_kind, std::memory_order_release);
+                self->WakeupWaiters();
             };
             {
                 std::lock_guard<std::mutex> lock(epoll_mutex_);

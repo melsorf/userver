@@ -144,8 +144,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
     
     bool registration_successful = false;
     {
-        std::unique_lock<std::mutex> fd_lock(fd_mutex_);
-        
+        std::lock_guard<std::mutex> registry_lock(fd_registry_mutex_);
         // Store callback info
         auto it = fd_callbacks_.find(fd);
         bool has_existing = (it != fd_callbacks_.end());
@@ -157,9 +156,16 @@ std::size_t EpollEventDispatcher::RegisterFd(
             // Update existing callback
             it->second.callback = std::move(callback);
             it->second.requested_events = events;
+            if (!owner.expired()) {
+                it->second.owner = std::move(owner);
+            }
         } else {
             // Register new callback
-            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events, target_thread});
+            FdCallbackInfo info{std::move(callback), events, target_thread};
+            if (!owner.expired()) {
+                info.owner = std::move(owner);
+            }
+            fd_callbacks_.emplace(fd, std::move(info));
         }
         
         // Register with the chosen thread's epoll instance
@@ -187,17 +193,10 @@ std::size_t EpollEventDispatcher::RegisterFd(
                 return std::numeric_limits<std::size_t>::max();
             }
         }
-        
-        registration_successful = true;
-        fd_lock.unlock();
-        
-        // Register owner if provided (using a separate mutex to avoid deadlocks)
-        if (registration_successful && owner.lock()) {
-            std::lock_guard<std::mutex> registry_lock(registry_mutex_);
-            fd_to_owner_[fd] = std::move(owner);
-        }
-    }
     
+        registration_successful = true;
+    }
+
     // Notify the target thread about new registration
     if (registration_successful) {
         PostEvent(target_thread);
@@ -211,8 +210,10 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
     
     size_t owner_thread = std::numeric_limits<size_t>::max();
     bool need_wakeup = false;
+
     {
-        std::lock_guard<std::mutex> lock(fd_mutex_);
+        std::lock_guard<std::mutex> registry_lock(fd_registry_mutex_);
+
         auto it = fd_callbacks_.find(fd);
         if (it == fd_callbacks_.end()) {
             return;
@@ -235,12 +236,6 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
                 }
             }
         }
-    }
-
-    // Remove from owner registry
-    {
-        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
-        fd_to_owner_.erase(fd);
     }
     
     // Wake up thread
@@ -377,7 +372,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             std::size_t correct_thread_index = thread_index;
             bool forward_to_other_thread = false;
             {
-                std::lock_guard<std::mutex> lock(fd_mutex_);
+                std::lock_guard<std::mutex> lock(fd_registry_mutex_);
                 auto it = fd_callbacks_.find(fd);
                 if (it != fd_callbacks_.end()) {
                     if (it->second.owner_thread == thread_index) {
@@ -404,9 +399,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                     bool should_call = true;
                     int fd_to_unregister = -1;
                     {
-                        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
-                        auto owner_it = fd_to_owner_.find(fd);
-                        if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
+                        std::lock_guard<std::mutex> registry_lock(fd_registry_mutex_);
+                        auto it = fd_callbacks_.find(fd);
+                        if (it != fd_callbacks_.end() && !it->second.owner.expired()) {
+                            // Owner exists and is still alive, call callback
+                            should_call = true;
+                        } else if (it != fd_callbacks_.end() && it->second.owner.expired()) {
+                            // Owner is destroyed, need to remove fd from epoll
                             should_call = false;
                             fd_to_unregister = fd;
                         }

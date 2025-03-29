@@ -93,6 +93,9 @@ FdControlHolder FdControl::Adopt(int fd) {
     fd_control->read_.SetEpollMode(use_epoll);
     fd_control->write_.SetEpollMode(use_epoll);
 
+    fd_control->read_.Reset(fd, Direction::Kind::kRead);
+    fd_control->write_.Reset(fd, Direction::Kind::kWrite);
+
     fd_control->write_.NotifyReady();
     
     return fd_control;

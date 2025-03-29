@@ -32,6 +32,7 @@ struct FdCallbackInfo {
     std::function<void(uint32_t)> callback;
     uint32_t requested_events;
     size_t owner_thread;
+    std::weak_ptr<void> owner;
 };
 
 class EpollEventDispatcher {
@@ -80,14 +81,11 @@ private:
     std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
     
     // Mutex for fd operations
-    std::mutex fd_mutex_;
+    std::mutex fd_registry_mutex_;
     std::unordered_map<int, FdCallbackInfo> fd_callbacks_;
     
     // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
-
-    static inline std::mutex registry_mutex_;
-    static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
 };
 
 }  // namespace engine
