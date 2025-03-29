@@ -313,14 +313,15 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         thread_active_[thread_index].store(true, std::memory_order_relaxed);
         
         // First try to get a task without blocking
-        auto task_ptr = queue.PopNonBlocking();
+        auto task_opt = queue.PopNonBlocking();
         
-        if (task_ptr) {
+        if (task_opt) {
+            auto& task_ptr = *task_opt;
             // Process task
             bool has_failed = false;
             try {
-                impl::TaskCounter::RunningToken token{task_ptr.get()->GetTaskCounter()};
-                task_ptr.get()->DoStep();
+                impl::TaskCounter::RunningToken token{task_ptr->GetTaskCounter()};
+                task_ptr->DoStep();
             } catch (const std::exception& ex) {
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
@@ -328,8 +329,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             
             pools->GetCoroPool().AccountStackUsage();
             
-            if (has_failed || task_ptr.get()->IsFinished()) {
-                task_ptr.get()->FinishDetached();
+            if (has_failed || task_ptr->IsFinished()) {
+                task_ptr->FinishDetached();
             }
             
             continue;  // Go back and check for more tasks
@@ -373,16 +374,17 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     // Spin
     for (int spin_count = 0; spin_count < kSpinningIterations && std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
         // Check for new tasks
-        auto task_ptr = queue.PopNonBlocking();
-        if (task_ptr) {
+        auto task_opt = queue.PopNonBlocking();
+        if (task_opt) {
+            auto& task_ptr = *task_opt;
             // Go back to active state
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
             thread_active_[thread_index].store(true, std::memory_order_relaxed);
             
             bool has_failed = false;
             try {
-                impl::TaskCounter::RunningToken token{task_ptr.get()->GetTaskCounter()};
-                task_ptr.get()->DoStep();
+                impl::TaskCounter::RunningToken token{task_ptr->GetTaskCounter()};
+                task_ptr->DoStep();
             } catch (const std::exception& ex) {
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
@@ -390,8 +392,8 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
             
             pools->GetCoroPool().AccountStackUsage();
             
-            if (has_failed || task_ptr.get()->IsFinished()) {
-                task_ptr.get()->FinishDetached();
+            if (has_failed || task_ptr->IsFinished()) {
+                task_ptr->FinishDetached();
             }
             return SpinResult::kTaskProcessed;
         }
@@ -408,7 +410,6 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
         } else if (ready < 0 && errno != EINTR) {
             LOG_ERROR() << "epoll_wait failed during spinning: " << strerror(errno);
         }
-        // Yield to avoid busy waiting
         std::this_thread::yield();
     }
     return SpinResult::kSpinningFailed;
