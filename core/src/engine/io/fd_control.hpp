@@ -73,14 +73,27 @@ public:
 
     int Fd() const noexcept { return poller_.GetFd(); }
 
-    [[nodiscard]] bool Wait(Deadline deadline) { 
-        if (!IsValid()) {
-            return false;
+    [[nodiscard]] bool Wait(Deadline deadline) {
+#ifdef __linux__
+        if (is_ready_.load(std::memory_order_acquire)) {
+            return true;
         }
-        return poller_.Wait(deadline).has_value();
+#endif
+        bool result = poller_.Wait(deadline).has_value();
+#ifdef __linux__
+        if (result) {
+            is_ready_.store(true, std::memory_order_release);
+        }
+#endif
+        return result;
     }
 
-    void ResetReady() noexcept { poller_.ResetReady(); }
+    void ResetReady() noexcept { 
+#ifdef __linux__
+        is_ready_.store(false, std::memory_order_release);
+#endif
+        poller_.ResetReady();
+    }
 
     // (IoFunc*)(int, void*, size_t), e.g. read
     template <typename IoFunc, typename... Context>
@@ -110,7 +123,12 @@ public:
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
 
     // For epoll integration - allows sockets to wake up waiters
-    void NotifyReady() { WakeupWaiters(); }
+    void NotifyReady() {
+#ifdef __linux__
+        is_ready_.store(true, std::memory_order_release);
+#endif
+        WakeupWaiters();
+    }
 
 private:
     friend class FdControl;
@@ -128,6 +146,10 @@ private:
     TryHandleError(int error_code, size_t processed_bytes, TransferMode mode, Deadline deadline, Context&... context);
 
     FdPoller poller_;
+
+#ifdef __linux__
+    std::atomic<bool> is_ready_{false};
+#endif
 };
 
 class FdControl final {
@@ -184,8 +206,7 @@ ErrorMode Direction::TryHandleError(
         if (current_task::ShouldCancel()) {
             throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
         }
-        auto wait_result = poller_.Wait(deadline);
-        if (!wait_result) {
+        if (!poller_.Wait(deadline)) {
             if (current_task::ShouldCancel()) {
                 throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
             } else {

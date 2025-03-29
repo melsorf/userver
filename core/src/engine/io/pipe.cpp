@@ -2,22 +2,17 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+ #include <array>
 
-#include <array>
-
-#include <userver/engine/io/exception.hpp>
-#include <userver/logging/log.hpp>
-#include <userver/utils/assert.hpp>
-#include <userver/utils/fast_scope_guard.hpp>
+ #include <userver/engine/io/exception.hpp>
+ #include <userver/utils/assert.hpp>
+ #include <userver/utils/fast_scope_guard.hpp>
 
 #include <build_config.hpp>
 #include <engine/io/fd_control.hpp>
 #include <utils/check_syscall.hpp>
-
 USERVER_NAMESPACE_BEGIN
-
 namespace engine::io {
-
 Pipe::Pipe() {
     std::array<int, 2> pipefd{-1, -1};
     utils::CheckSyscallCustomException<IoSystemError>(
@@ -28,19 +23,15 @@ Pipe::Pipe() {
 #endif
         "creating pipe"
     );
-
     utils::FastScopeGuard read_guard([fd = pipefd[0]]() noexcept { ::close(fd); });
     utils::FastScopeGuard write_guard([fd = pipefd[1]]() noexcept { ::close(fd); });
-
     reader = PipeReader(pipefd[0]);
-    read_guard.Release();
-    writer = PipeWriter(pipefd[1]);
-    write_guard.Release();
+     read_guard.Release();
+     writer = PipeWriter(pipefd[1]);
+     write_guard.Release();
+ }
 
-    writer.fd_control_->Write().NotifyReady();
-}
-
-PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+ PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
 
 bool PipeReader::IsValid() const { return !!fd_control_; }
 
@@ -75,20 +66,12 @@ int PipeReader::Release() noexcept {
         fd_control_->Invalidate();
         fd_control_.reset();
     }
-    return fd;
-}
+     return fd;
+ }
 
-void PipeReader::Close() {
-#ifdef __linux__
-    // Always notify waiters before closing
-    if (fd_control_) {
-        fd_control_->Read().NotifyReady();
-    }
-#endif
-    fd_control_.reset();
-}
+ void PipeReader::Close() { fd_control_.reset(); }
 
-PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+ PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
 
 bool PipeWriter::IsValid() const { return !!fd_control_; }
 
@@ -98,13 +81,13 @@ bool PipeWriter::WaitWriteable(Deadline deadline) {
 }
 
 size_t PipeWriter::WriteAll(const void* buf, size_t len, Deadline deadline) {
-    if (!IsValid()) {
-        throw IoException("Attempt to WriteAll to closed pipe end");
-    }
-    auto& dir = fd_control_->Write(); 
-    impl::Direction::SingleUserGuard guard(dir);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    void* nonconst_buf = const_cast<void*>(buf);
+     if (!IsValid()) {
+         throw IoException("Attempt to WriteAll to closed pipe end");
+     }
+     auto& dir = fd_control_->Write();
+     impl::Direction::SingleUserGuard guard(dir);
+     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+     void* nonconst_buf = const_cast<void*>(buf);
     return dir.PerformIo(guard, &::write, nonconst_buf, len, impl::TransferMode::kWhole, deadline, "WriteAll to pipe");
 }
 
@@ -116,19 +99,11 @@ int PipeWriter::Release() noexcept {
         fd_control_->Invalidate();
         fd_control_.reset();
     }
-    return fd;
-}
+     return fd;
+ }
 
-void PipeWriter::Close() {
-#ifdef __linux__
-    // Always notify waiters before closing
-    if (fd_control_) {
-        fd_control_->Write().NotifyReady();
-    }
-#endif
-    fd_control_.reset();
-}
+ void PipeWriter::Close() { fd_control_.reset(); }
 
-}  // namespace engine::io
+ }  // namespace engine::io
 
 USERVER_NAMESPACE_END

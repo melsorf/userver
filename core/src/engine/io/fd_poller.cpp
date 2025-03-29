@@ -158,7 +158,7 @@ struct FdPoller::Impl final
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
 #ifdef __linux__
-    bool use_epoll_{true};
+    bool use_epoll_{false};
     bool use_epoll_requested_{true}; // By default, try to use epoll when available
     int fd_{-1};
     std::optional<std::size_t> registered_fd_index_;
@@ -182,8 +182,6 @@ FdPoller::Impl::~Impl() {
             fd_to_unregister = fd_;
             processor = task_processor_;
             registered_fd_index_.reset();
-            fd_ = -1;
-            task_processor_ = nullptr;
         }
     }
     
@@ -371,7 +369,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
             }
             registered_fd_index_.reset();
-            fd_ = -1;
+            use_epoll_ = false;
             task_processor_ = nullptr;
         }
     }
@@ -384,10 +382,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto weak_self = GetWeakFromThis();
-            auto callback = [weak_self, kind](uint32_t events) {
-                auto self = weak_self.lock();
-                if (!self) return;
-
+            auto callback = [this, kind](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
                 
@@ -403,8 +398,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     return;
                 }
                 
-                self->events_that_happened_.store(userver_kind, std::memory_order_release);
-                self->WakeupWaiters();
+                events_that_happened_.store(userver_kind, std::memory_order_release);
+                WakeupWaiters();
             };
             {
                 std::lock_guard<std::mutex> lock(epoll_mutex_);
