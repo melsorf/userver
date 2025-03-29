@@ -49,11 +49,6 @@ public:
     using Kind = FdPoller::Kind;
     using State = FdPoller::State;
 
-#ifdef __linux__
-    void SetEpollMode(bool use_edge_triggered) {use_edge_triggered_ = use_edge_triggered;}
-    bool GetUseEdgeTriggered() const { return use_edge_triggered_; }
-#endif
-
     class SingleUserGuard final {
     public:
 #ifdef NDEBUG
@@ -78,25 +73,9 @@ public:
 
     int Fd() const noexcept { return poller_.GetFd(); }
 
-    [[nodiscard]] bool Wait(Deadline deadline) {
-#ifdef __linux__
-        if (is_ready_.load(std::memory_order_acquire)) {
-            return true;
-        }
-#endif
-        bool result = poller_.Wait(deadline).has_value();
-#ifdef __linux__
-        if (result) { is_ready_.store(true, std::memory_order_release); }
-#endif
-        return result;
-    }
+    [[nodiscard]] bool Wait(Deadline deadline) { return poller_.Wait(deadline).has_value(); }
 
-    void ResetReady() noexcept { 
-#ifdef __linux__
-        is_ready_.store(false, std::memory_order_release);
-#endif
-        poller_.ResetReady();
-    }
+    void ResetReady() noexcept { poller_.ResetReady(); }
 
     // (IoFunc*)(int, void*, size_t), e.g. read
     template <typename IoFunc, typename... Context>
@@ -126,12 +105,7 @@ public:
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
 
     // For epoll integration - allows sockets to wake up waiters
-    void NotifyReady() {
-#ifdef __linux__
-        is_ready_.store(true, std::memory_order_release);
-#endif
-        WakeupWaiters();
-    }
+    void NotifyReady() { WakeupWaiters(); }
 
 private:
     friend class FdControl;
@@ -149,11 +123,6 @@ private:
     TryHandleError(int error_code, size_t processed_bytes, TransferMode mode, Deadline deadline, Context&... context);
 
     FdPoller poller_;
-
-#ifdef __linux__
-    std::atomic<bool> is_ready_{false};
-    bool use_edge_triggered_{true};
-#endif
 };
 
 class FdControl final {

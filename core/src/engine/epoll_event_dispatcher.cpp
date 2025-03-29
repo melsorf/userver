@@ -137,18 +137,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
     
     // For non-task FDs (like sockets) use edge-triggered mode
     struct epoll_event ev{};
-    bool use_edge_triggered = (events & EPOLLET);
-    // If not already specified, get it from the FdControl if available
-    if (!use_edge_triggered) {
-        auto fd_control_ptr = std::static_pointer_cast<impl::FdControl>(owner.lock());
-        if (fd_control_ptr) {
-            auto direction = fd_control_ptr->GetCurrentDirection();
-            if (direction) {
-                use_edge_triggered = direction->GetUseEdgeTriggered();
-            }
-        }
-    }
-    ev.events = use_edge_triggered ? (events | EPOLLET) : events;
+    ev.events = events | EPOLLET; 
     
     // Choose a specific thread to handle this fd
     auto target_thread = utils::RandRange(thread_count_);

@@ -42,7 +42,7 @@ Pipe::Pipe() {
 
 PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
     if (fd_control_) {
-        fd_control_->Read().SetEpollMode(false);
+        fd_control_->Read().SetEpollMode(true);
     }
 }
 
@@ -94,7 +94,7 @@ void PipeReader::Close() {
 
 PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
     if (fd_control_) {
-        fd_control_->Write().SetEpollMode(false);
+        fd_control_->Write().SetEpollMode(true);
     }
 }
 
@@ -109,8 +109,7 @@ size_t PipeWriter::WriteAll(const void* buf, size_t len, Deadline deadline) {
     if (!IsValid()) {
         throw IoException("Attempt to WriteAll to closed pipe end");
     }
-    auto& dir = fd_control_->Write();
-    dir.ResetReady(); 
+    auto& dir = fd_control_->Write(); 
     impl::Direction::SingleUserGuard guard(dir);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     void* nonconst_buf = const_cast<void*>(buf);
