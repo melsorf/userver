@@ -84,6 +84,7 @@ public:
     std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
         std::weak_ptr<void> owner = {});
     void UnregisterFd(int fd);
+    static std::size_t GetCurrentThreadIndex() noexcept;
 #endif 
 
 private:
@@ -139,7 +140,7 @@ private:
 
 #ifdef __linux__
     std::unique_ptr<EpollEventDispatcher> epoll_ev_dispatcher_;
-    void RunEventLoop(std::size_t thread_index) noexcept;
+    static inline thread_local std::size_t current_thread_index_ = std::numeric_limits<std::size_t>::max();
 #endif
 };
 

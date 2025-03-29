@@ -106,6 +106,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
         if (config.use_epoll_mode) {
             epoll_ev_dispatcher_ = std::make_unique<EpollEventDispatcher>(config_.worker_threads);
             
+            // Register task queue notification fd with epoll if available
             if (std::holds_alternative<TaskQueue>(task_queue_)) {
                 auto& queue = std::get<TaskQueue>(task_queue_);
                 int notify_fd = queue.GetNotifyFd();
@@ -113,32 +114,27 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
                     epoll_ev_dispatcher_->RegisterFd(
                         notify_fd, 
                         EPOLLIN, 
-                        []([[maybe_unused]] uint32_t events) {
-                            // No need to do anything here - epoll thread will check
-                            // queue directly when woken up
-                        },
+                        []([[maybe_unused]] uint32_t events) {},
                         std::weak_ptr<void>{});
                 }
             }
         }
 #endif
         LOG_INFO() << "creating task_processor " << Name() << " "
-                   << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
+            << "worker_threads=" << config_.worker_threads 
+            << " thread_name=" << config_.thread_name
+#ifdef __linux__
+            << " epoll_mode=" << (config_.use_epoll_mode ? "enabled" : "disabled")
+#endif
+            ;
+        // Start worker threads
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
-#ifdef __linux__
-                if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
-                    RunEventLoop(i);
-                } else {
-                    ProcessTasks();
-                }
-#else
                 ProcessTasks();
-#endif
                 FinalizeWorkerThread();
             });
         }
@@ -199,8 +195,9 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     SetTaskQueueWaitTimepoint(context);
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
+
+    // Notify worker threads about new task
 #ifdef __linux__
-    // Post event to epoll queue
     if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
         epoll_ev_dispatcher_->PostEvent();
     }
@@ -312,6 +309,9 @@ void RegisterThreadStartedHook(std::function<void()> func) {
 }
 
 void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
+#ifdef __linux__ 
+    current_thread_index_ = index;
+#endif
     switch (config_.os_scheduling) {
         case OsScheduling::kNormal:
             break;
@@ -339,6 +339,16 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
 void TaskProcessor::FinalizeWorkerThread() noexcept { pools_->GetCoroPool().ClearLocalCache(); }
 
 void TaskProcessor::ProcessTasks() noexcept {
+#ifdef __linux__
+    // Use epoll mode if enabled, otherwise fall back to regular task processing
+    if (config_.use_epoll_mode && epoll_ev_dispatcher_ && std::holds_alternative<TaskQueue>(task_queue_)) {
+        auto& queue = std::get<TaskQueue>(task_queue_);
+        epoll_ev_dispatcher_->ProcessEvents(GetCurrentThreadIndex(), queue, pools_);
+        return;
+    }
+#endif
+
+    // Task processing without epoll
     while (true) {
         auto context = std::visit([](auto&& arg) { return arg.PopBlocking(); }, task_queue_);
         if (!context) break;
@@ -477,31 +487,22 @@ bool TaskProcessor::IsEpollModeEnabled() const {
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
-                                     std::weak_ptr<void> owner) {
-    if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
-        if (epoll_ev_dispatcher_) {
-            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
-        }
+    std::weak_ptr<void> owner) {
+    if (!config_.use_epoll_mode || !epoll_ev_dispatcher_) {
+        return std::numeric_limits<std::size_t>::max();
     }
-    return std::numeric_limits<std::size_t>::max();
+
+    return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
 }
-    
+
 void TaskProcessor::UnregisterFd(int fd) {
-    if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
-        if (epoll_ev_dispatcher_) {
-            epoll_ev_dispatcher_->UnregisterFd(fd);
-        }
+    if (config_.use_epoll_mode && epoll_ev_dispatcher_) {
+        epoll_ev_dispatcher_->UnregisterFd(fd);
     }
 }
 
-void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
-    // Only use epoll when the underlying queue is TaskQueue.
-    if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
-        auto& queue = std::get<TaskQueue>(task_queue_);
-        epoll_ev_dispatcher_->ProcessEvents(thread_index, queue, pools_);
-    } else {
-        ProcessTasks();
-    }
+std::size_t TaskProcessor::GetCurrentThreadIndex() noexcept {
+    return current_thread_index_;
 }
 #endif
 
