@@ -49,6 +49,11 @@ public:
     using Kind = FdPoller::Kind;
     using State = FdPoller::State;
 
+#ifdef __linux__
+    void SetEpollMode(bool use_edge_triggered) {use_edge_triggered_ = use_edge_triggered;}
+    bool GetUseEdgeTriggered() const { return use_edge_triggered_; }
+#endif
+
     class SingleUserGuard final {
     public:
 #ifdef NDEBUG
@@ -81,9 +86,7 @@ public:
 #endif
         bool result = poller_.Wait(deadline).has_value();
 #ifdef __linux__
-        if (result) {
-            is_ready_.store(true, std::memory_order_release);
-        }
+        if (result) { is_ready_.store(true, std::memory_order_release); }
 #endif
         return result;
     }
@@ -149,6 +152,7 @@ private:
 
 #ifdef __linux__
     std::atomic<bool> is_ready_{false};
+    bool use_edge_triggered_{true};
 #endif
 };
 
