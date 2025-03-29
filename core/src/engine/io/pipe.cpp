@@ -40,11 +40,7 @@ Pipe::Pipe() {
     writer.fd_control_->Write().NotifyReady();
 }
 
-PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
-    if (fd_control_) {
-        fd_control_->Read().SetEpollMode(true);
-    }
-}
+PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
 
 bool PipeReader::IsValid() const { return !!fd_control_; }
 
@@ -92,11 +88,7 @@ void PipeReader::Close() {
     fd_control_.reset();
 }
 
-PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
-    if (fd_control_) {
-        fd_control_->Write().SetEpollMode(true);
-    }
-}
+PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
 
 bool PipeWriter::IsValid() const { return !!fd_control_; }
 
