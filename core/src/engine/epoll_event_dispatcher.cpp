@@ -329,7 +329,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         
         // First try to get a task without blocking
         auto task_opt = queue.PopNonBlocking();
-        
         if (task_opt && *task_opt) {
             auto& task_ptr = *task_opt;
             // Process task

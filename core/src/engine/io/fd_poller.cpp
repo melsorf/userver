@@ -397,10 +397,17 @@ bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind) {
     
     // Strong reference to this that will be captured in the callback
     // Ensures the object stays alive while the callback can be invoked
-    auto self_ptr = shared_from_this();
+    std::shared_ptr<FdPoller::Impl> self_ptr;
+    try {
+        self_ptr = shared_from_this();
+    } catch (const std::bad_weak_ptr&) {
+        LOG_DEBUG() << "Failed to get shared_from_this, object may not be owned by shared_ptr yet";
+        return false;
+    }
     
     // weak_ptr from the strong reference for registration
     auto weak_self = std::weak_ptr<FdPoller::Impl>(self_ptr);
+    uint32_t epoll_events = KindToEpollEvents(kind);
 
     auto callback = [weak_self, kind](uint32_t events) {
         // Try to get a valid reference
@@ -413,9 +420,6 @@ bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind) {
             self->WakeupWaiters();
         }
     };
-
-    uint32_t epoll_events = KindToEpollEvents(kind);
-
     // Register with epoll
     std::lock_guard<std::mutex> lock(epoll_mutex_);
     // Unregister any existing registration first to avoid duplicates
