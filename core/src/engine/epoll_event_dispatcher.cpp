@@ -369,9 +369,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         if (CheckAndDrainWakeup(thread_index)) {
             continue;
         }
-
+        if (is_shutting_down_.load(std::memory_order_acquire)) {
+            continue;
+        }
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-
+        if (is_shutting_down_.load(std::memory_order_acquire)) {
+            continue;
+        }
         thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
         thread_active_[thread_index].store(true, std::memory_order_relaxed);
         
