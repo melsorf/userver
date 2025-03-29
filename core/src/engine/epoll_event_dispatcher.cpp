@@ -313,14 +313,14 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         thread_active_[thread_index].store(true, std::memory_order_relaxed);
         
         // First try to get a task without blocking
-        auto context = queue.PopNonBlocking();
+        auto task_ptr = queue.PopNonBlocking();
         
-        if (context) {
+        if (task_ptr) {
             // Process task
             bool has_failed = false;
             try {
-                impl::TaskCounter::RunningToken token{context->GetTaskCounter()};
-                context->DoStep();
+                impl::TaskCounter::RunningToken token{task_ptr.get()->GetTaskCounter()};
+                task_ptr.get()->DoStep();
             } catch (const std::exception& ex) {
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
@@ -328,8 +328,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             
             pools->GetCoroPool().AccountStackUsage();
             
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
+            if (has_failed || task_ptr.get()->IsFinished()) {
+                task_ptr.get()->FinishDetached();
             }
             
             continue;  // Go back and check for more tasks
@@ -373,16 +373,16 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     // Spin
     for (int spin_count = 0; spin_count < kSpinningIterations && std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
         // Check for new tasks
-        auto context = queue.PopNonBlocking();
-        if (context) {
+        auto task_ptr = queue.PopNonBlocking();
+        if (task_ptr) {
             // Go back to active state
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
             thread_active_[thread_index].store(true, std::memory_order_relaxed);
             
             bool has_failed = false;
             try {
-                impl::TaskCounter::RunningToken token{context->GetTaskCounter()};
-                context->DoStep();
+                impl::TaskCounter::RunningToken token{task_ptr.get()->GetTaskCounter()};
+                task_ptr.get()->DoStep();
             } catch (const std::exception& ex) {
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
@@ -390,8 +390,8 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
             
             pools->GetCoroPool().AccountStackUsage();
             
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
+            if (has_failed || task_ptr.get()->IsFinished()) {
+                task_ptr.get()->FinishDetached();
             }
             return SpinResult::kTaskProcessed;
         }
