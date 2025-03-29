@@ -161,7 +161,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
             }
         } else {
             // Register new callback
-            FdCallbackInfo info{std::move(callback), events, target_thread};
+            FdCallbackInfo info{std::move(callback), events, target_thread, std::move(owner)};
             if (!owner.expired()) {
                 info.owner = std::move(owner);
             }
