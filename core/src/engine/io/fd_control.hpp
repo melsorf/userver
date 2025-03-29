@@ -77,7 +77,8 @@ public:
         if (!IsValid()) {
             return false;
         }
-        return poller_.Wait(deadline).has_value();
+        auto result = poller_.Wait(deadline);
+        return result.has_value() && static_cast<bool>(*result);
     }
 
     void ResetReady() noexcept { poller_.ResetReady(); }
@@ -184,7 +185,8 @@ ErrorMode Direction::TryHandleError(
         if (current_task::ShouldCancel()) {
             throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
         }
-        if (!poller_.Wait(deadline)) {
+        auto wait_result = poller_.Wait(deadline);
+        if (!wait_result || !*wait_result) {
             if (current_task::ShouldCancel()) {
                 throw(IoCancelled(/*bytes_transferred =*/processed_bytes) << ... << context);
             } else {

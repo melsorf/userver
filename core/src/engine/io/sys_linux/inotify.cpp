@@ -105,6 +105,9 @@ void Inotify::RmWatch(const std::string& path) {
 }
 
 std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
+    if (engine::current_task::ShouldCancel()) {
+        return {};
+    }
     if (!pending_events_.empty()) {
         auto front = pending_events_.front();
         pending_events_.pop();
@@ -127,6 +130,9 @@ std::optional<Event> Inotify::Poll(engine::Deadline deadline) {
 void Inotify::Dispatch() {
     char buff[sizeof(inotify_event) + NAME_MAX + 1];
     while (true) {
+        if (engine::current_task::ShouldCancel()) {
+            return;
+        }
         ssize_t len;
         
         do {
