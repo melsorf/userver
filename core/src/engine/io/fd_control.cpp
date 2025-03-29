@@ -78,8 +78,6 @@ FdControlHolder FdControl::Adopt(int fd) {
     SetCloexec(fd);
     SetNonblock(fd);
     ReduceSigpipe(fd);
-    fd_control->read_.Reset(fd, Direction::Kind::kRead);
-    fd_control->write_.Reset(fd, Direction::Kind::kWrite);
 
     // Configure for epoll mode if available
     bool use_epoll = false;
