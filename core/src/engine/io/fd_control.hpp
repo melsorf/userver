@@ -73,7 +73,12 @@ public:
 
     int Fd() const noexcept { return poller_.GetFd(); }
 
-    [[nodiscard]] bool Wait(Deadline deadline) { return poller_.Wait(deadline).has_value(); }
+    [[nodiscard]] bool Wait(Deadline deadline) { 
+        if (!IsValid()) {
+            return false;
+        }
+        return poller_.Wait(deadline).has_value();
+    }
 
     void ResetReady() noexcept { poller_.ResetReady(); }
 
