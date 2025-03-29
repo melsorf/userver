@@ -441,7 +441,7 @@ bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind) {
 FdPoller::Kind FdPoller::Impl::DetermineEventKind(uint32_t events, Kind original_kind) const {
     // Priority: HUP/ERR > EPOLLRDHUP > IN+OUT > IN > OUT
     if (events & (EPOLLHUP | EPOLLERR)) {
-        // Connection closed or error - signal both read and write readiness
+        // Connection closed or error - signal both read and write
         return FdPoller::Kind::kReadWrite;
     } else if (events & EPOLLRDHUP) {
         return FdPoller::Kind::kRead;
