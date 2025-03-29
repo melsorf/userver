@@ -92,7 +92,7 @@ private:
     void ProcessOneEpollEvent(std::size_t thread_index, int fd, uint32_t events);
 
     // Returns true if a wakeup was requested for the specified thread
-    bool IsWakeupRequested(std::size_t thread_index);
+    bool CheckAndDrainWakeup(std::size_t thread_index);
 
     // Store thread count for bounds checking
     size_t thread_count_{0};

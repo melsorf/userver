@@ -347,7 +347,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             if (has_failed || task_ptr->IsFinished()) {
                 task_ptr->FinishDetached();
             }
-            
             continue;  // Go back and check for more tasks
         }
 
@@ -358,17 +357,16 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
             continue;
         }
+        // Update thread state before sleeping
         {
             thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_release);
             thread_active_[thread_index].store(false, std::memory_order_release);
-            
-            std::atomic_signal_fence(std::memory_order_seq_cst);
-            
             thread_idle_since_[thread_index].store(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_release);
         }
         
-        if (IsWakeupRequested(thread_index)) {
+        // Check if we got a wakeup signal before going to sleep
+        if (CheckAndDrainWakeup(thread_index)) {
             continue;
         }
 
@@ -389,16 +387,34 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     }
 }
 
-bool EpollEventDispatcher::IsWakeupRequested(std::size_t thread_index) {
+bool EpollEventDispatcher::CheckAndDrainWakeup(std::size_t thread_index) {
     if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
         return false;
     }
-    uint64_t value = 0;
-    int ret = read(notify_fds_[thread_index], &value, sizeof(value));
-    if (ret > 0) {
-        return true;  // Successfully read wakeup notification  
+    bool wakeup_received = false;
+    // Properly drain the eventfd
+    while (true) {
+        uint64_t value;
+        int ret = read(notify_fds_[thread_index], &value, sizeof(value));
+        if (ret > 0) {
+            wakeup_received = true;
+            // Continue reading to drain completely
+        } else if (ret < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Drained all notifications
+                break;
+            }
+            if (errno != EINTR) {
+                LOG_ERROR() << "Error reading from eventfd: " << strerror(errno);
+                break;
+            }
+            // EINTR - retry
+        } else {
+            // ret == 0, should not happen with eventfd
+            break;
+        }
     }
-    return false;
+    return wakeup_received;
 }
 
 EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
