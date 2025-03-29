@@ -139,7 +139,6 @@ private:
 
 #ifdef __linux__
     std::unique_ptr<EpollEventDispatcher> epoll_ev_dispatcher_;
-    void RunEventLoop(std::size_t thread_index) noexcept;
 #endif
 };
 
