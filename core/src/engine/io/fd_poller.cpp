@@ -184,10 +184,10 @@ FdPoller::Impl::~Impl() {
             fd_to_unregister = fd_;
             processor = task_processor_;
             registered_fd_index_.reset();
-            fd_ = -1;
-            use_epoll_ = false;
-            task_processor_ = nullptr;
         }
+        fd_ = -1;
+        use_epoll_ = false;
+        task_processor_ = nullptr;
     }
     
     if (fd_to_unregister >= 0 && processor) {
@@ -237,8 +237,9 @@ void FdPoller::Impl::Invalidate() {
         if (use_epoll_ && fd_ >= 0 &&task_processor_ && registered_fd_index_) {
             fd_to_unregister = fd_;
             processor = task_processor_;
+            registered_fd_index_.reset();
         }
-        registered_fd_index_.reset();
+        state_.store(FdPoller::State::kInvalid, std::memory_order_release);
         fd_ = -1;
         use_epoll_ = false;
         task_processor_ = nullptr;
@@ -250,10 +251,10 @@ void FdPoller::Impl::Invalidate() {
             LOG_ERROR() << "Failed to unregister fd " << fd_to_unregister << " from epoll";
         }
     }
-#endif
-
+#else
     StopWatcher();
     state_.store(FdPoller::State::kInvalid, std::memory_order_release);
+#endif
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
@@ -480,9 +481,10 @@ void FdPoller::Impl::ResetEpollRegistration() {
             fd_to_unregister = fd_;
             processor = task_processor_;
             registered_fd_index_.reset();
-            use_epoll_ = false;
-            task_processor_ = nullptr;
         }
+        fd_ = -1;
+        use_epoll_ = false;
+        task_processor_ = nullptr;
     }
     
     if (fd_to_unregister >= 0 && processor) {
