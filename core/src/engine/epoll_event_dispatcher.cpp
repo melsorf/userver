@@ -350,7 +350,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         }
 
         // No tasks, start spinning
-        SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, pools, events);
+        SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, events);
 
         if (spin_result == SpinResult::kSpinningFailed) {
             // Update thread state before sleeping
