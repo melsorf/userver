@@ -89,6 +89,12 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
     if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
         return;
     }
+
+    // First try to change thread state from sleeping to active
+    auto expected = ThreadState::kSleeping;
+    thread_state_[thread_index].compare_exchange_strong(
+        expected, ThreadState::kActive, 
+        std::memory_order_release, std::memory_order_relaxed);
     
     // Write to eventfd to wake up thread
     const uint64_t value = 1;
@@ -103,6 +109,7 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) && 
             !is_shutting_down_.load(std::memory_order_acquire) &&
             retry_count++ < max_retries) {
+            std::this_thread::yield();
             continue;
         }
         break;
@@ -123,7 +130,7 @@ void EpollEventDispatcher::PostEvent() {
 std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() const {
     // Search for the spinning thread
     for (size_t i = 0; i < thread_count_; ++i) {
-        if (thread_state_[i].load(std::memory_order_relaxed) == ThreadState::kSpinning) {
+        if (thread_state_[i].load(std::memory_order_acquire) == ThreadState::kSpinning) {
             // If there are spinning threads, there is no need to wake up idle threads
             return std::nullopt;
         }
@@ -133,8 +140,8 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() const {
     std::optional<std::size_t> best_thread;
     
     for (size_t i = 0; i < thread_count_; ++i) {
-        if (thread_state_[i].load(std::memory_order_relaxed) == ThreadState::kSleeping) {
-            uint64_t idle_since = thread_idle_since_[i].load(std::memory_order_relaxed);
+        if (thread_state_[i].load(std::memory_order_acquire) == ThreadState::kSleeping) {
+            uint64_t idle_since = thread_idle_since_[i].load(std::memory_order_acquire);
             if (idle_since > max_idle_time) {
                 max_idle_time = idle_since;
                 best_thread = i;
@@ -364,7 +371,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, events);
 
         if (spin_result == SpinResult::kSpinningFailed) {
-            std::atomic_thread_fence(std::memory_order_seq_cst);
             // Update thread state before sleeping
             auto prev_state = ThreadState::kActive;
             if (!thread_state_[thread_index].compare_exchange_strong(
@@ -379,10 +385,17 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 
             std::atomic_thread_fence(std::memory_order_seq_cst);
 
+            // Prepare eventfd for monitoring before final check
+            struct epoll_event ev{};
+            ev.events = EPOLLIN;
+            ev.data.fd = notify_fds_[thread_index];
+            
+            // Refresh eventfd registration to ensure it's monitored
+            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, notify_fds_[thread_index], &ev);
+
             // Check if we got a wakeup signal before going to sleep
             if (CheckAndDrainWakeup(thread_index) || 
-                is_shutting_down_.load(std::memory_order_acquire) ||
-                !queue.IsEmpty()) {
+                is_shutting_down_.load(std::memory_order_acquire)) {
                 thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
                 continue;
             }
@@ -390,6 +403,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
 
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+            thread_idle_since_[thread_index].store(0, std::memory_order_release);
+
             if (is_shutting_down_.load(std::memory_order_acquire)) break;
 
             if (ready > 0) {
