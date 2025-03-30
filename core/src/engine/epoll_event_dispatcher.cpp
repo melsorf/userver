@@ -307,26 +307,26 @@ void EpollEventDispatcher::ProcessOneEpollEvent(std::size_t thread_index, int fd
     }
 }
 
-void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
+void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue,
                                         std::shared_ptr<impl::TaskProcessorPools> pools) {
     if (thread_index >= thread_count_) {
         LOG_ERROR() << "Invalid thread index: " << thread_index;
         return;
     }
-    
+
     int epoll_fd = epoll_fds_[thread_index];
     if (epoll_fd == -1) {
         LOG_ERROR() << "Invalid epoll fd for thread " << thread_index;
         return;
     }
-    
+
     struct epoll_event events[kMaxEvents];
-    
+
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
         // Mark thread as active
         thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
         thread_active_[thread_index].store(true, std::memory_order_relaxed);
-        
+
         // First try to get a task without blocking
         auto task_opt = queue.PopNonBlocking();
         if (task_opt && *task_opt) {
@@ -340,9 +340,9 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
             }
-            
+
             pools->GetCoroPool().AccountStackUsage();
-            
+
             if (has_failed || task_ptr->IsFinished()) {
                 task_ptr->FinishDetached();
             }
@@ -351,41 +351,54 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
 
         // No tasks, start spinning
         SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, pools, events);
-        
-        if (spin_result == SpinResult::kTaskProcessed || spin_result == SpinResult::kEventsProcessed) {
-            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
-            continue;
-        }
-        // Update thread state before sleeping
-        {
+
+        if (spin_result == SpinResult::kSpinningFailed) {
+            // Update thread state before sleeping
             thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_release);
             thread_active_[thread_index].store(false, std::memory_order_release);
-            thread_idle_since_[thread_index].store(std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_release);
-        }
-        
-        // Check if we got a wakeup signal before going to sleep
-        if (CheckAndDrainWakeup(thread_index)) {
-            continue;
-        }
-        if (is_shutting_down_.load(std::memory_order_acquire)) {
-            continue;
-        }
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-        if (is_shutting_down_.load(std::memory_order_acquire)) {
-            continue;
-        }
-        thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-        thread_active_[thread_index].store(true, std::memory_order_relaxed);
-        
-        if (ready > 0) {
-            // Process events
-            for (int i = 0; i < ready; ++i) {
-                ProcessOneEpollEvent(thread_index, events[i].data.fd, events[i].events);
+            thread_idle_since_[thread_index].store(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+                std::memory_order_release);
+
+            // Check if we got a wakeup signal before going to sleep
+            if (CheckAndDrainWakeup(thread_index)) {
+                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+                continue;
             }
-        } else if (ready < 0 && errno != EINTR) {
-            LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (is_shutting_down_.load(std::memory_order_acquire)) {
+                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+                continue;
+            }
+            int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+            if (is_shutting_down_.load(std::memory_order_acquire)) {
+                continue;
+            }
+            thread_active_[thread_index].store(true, std::memory_order_relaxed);
+
+            if (ready > 0) {
+                // Process events
+                for (int i = 0; i < ready; ++i) {
+                    ProcessOneEpollEvent(thread_index, events[i].data.fd, events[i].events);
+                }
+            } else if (ready < 0 && errno != EINTR) {
+                LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else {
+            // Process events or tasks that were found during spinning
+            if (spin_result == SpinResult::kEventsProcessed) {
+                int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0); // Non-blocking
+                if (ready > 0) {
+                    for (int i = 0; i < ready; ++i) {
+                        ProcessOneEpollEvent(thread_index, events[i].data.fd, events[i].events);
+                    }
+                } else if (ready < 0 && errno != EINTR) {
+                    LOG_ERROR() << "epoll_wait failed after spin: " << strerror(errno);
+                }
+            }
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+            continue;
         }
     }
 }
@@ -430,44 +443,31 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     auto spin_start = std::chrono::steady_clock::now();
 
     // Spin
-    for (int spin_count = 0; spin_count < kSpinningIterations && std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
+    for (int spin_count = 0; spin_count < kSpinningIterations &&
+        std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
         // Check for new tasks
         auto task_opt = queue.PopNonBlocking();
         if (task_opt && *task_opt) {
-            auto& task_ptr = *task_opt;
-            // Go back to active state
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-            thread_active_[thread_index].store(true, std::memory_order_relaxed);
-            
-            bool has_failed = false;
-            try {
-                impl::TaskCounter::RunningToken token{task_ptr->GetTaskCounter()};
-                task_ptr->DoStep();
-            } catch (const std::exception& ex) {
-                LOG_ERROR() << "Exception in task: " << ex.what();
-                has_failed = true;
-            }
-            
-            pools->GetCoroPool().AccountStackUsage();
-            
-            if (has_failed || task_ptr->IsFinished()) {
-                task_ptr->FinishDetached();
-            }
-            return SpinResult::kTaskProcessed;
+            return SpinResult::kTaskProcessed; // Task found, let main loop process
         }
+
         // No tasks, check for epoll events without blocking
         int epoll_fd = epoll_fds_[thread_index];
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0);
-        
+
         if (ready > 0) {
-            // Process events
-            for (int i = 0; i < ready; ++i) {
-                ProcessOneEpollEvent(thread_index, events[i].data.fd, events[i].events);
-            }
-            return SpinResult::kEventsProcessed;
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+            return SpinResult::kEventsProcessed; // Events found, let main loop process
         } else if (ready < 0 && errno != EINTR) {
             LOG_ERROR() << "epoll_wait failed during spinning: " << strerror(errno);
         }
+
+        if (CheckAndDrainWakeup(thread_index)) {
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+            return SpinResult::kEventsProcessed; // Treat as event processed to re-check queue
+        }
+
         std::this_thread::yield();
     }
     thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
