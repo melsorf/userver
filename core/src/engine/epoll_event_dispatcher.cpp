@@ -17,12 +17,10 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     : thread_count_(thread_count),
       epoll_fds_(thread_count, -1),
       notify_fds_(thread_count, -1),
-      thread_active_(std::make_unique<std::atomic<bool>[]>(thread_count)),
       thread_idle_since_(std::make_unique<std::atomic<uint64_t>[]>(thread_count)),
       thread_state_(std::make_unique<std::atomic<ThreadState>[]>(thread_count)) {
       
     for (size_t i = 0; i < thread_count_; ++i) {
-        thread_active_[i].store(false, std::memory_order_relaxed);
         thread_idle_since_[i].store(0, std::memory_order_relaxed);
         thread_state_[i].store(ThreadState::kActive, std::memory_order_relaxed);
     }
@@ -135,7 +133,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() const {
     std::optional<std::size_t> best_thread;
     
     for (size_t i = 0; i < thread_count_; ++i) {
-        if (!thread_active_[i].load(std::memory_order_relaxed)) {
+        if (hread_state_[i].load(std::memory_order_relaxed) == ThreadState::kSleeping) {
             uint64_t idle_since = thread_idle_since_[i].load(std::memory_order_relaxed);
             if (idle_since > max_idle_time) {
                 max_idle_time = idle_since;
@@ -334,7 +332,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
         // Mark thread as active
         thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-        thread_active_[thread_index].store(true, std::memory_order_relaxed);
 
         bool processed_any_tasks = false;
         while (true) {
@@ -369,8 +366,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         if (spin_result == SpinResult::kSpinningFailed) {
             std::atomic_thread_fence(std::memory_order_seq_cst);
             // Update thread state before sleeping
-            thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_release);
-            thread_active_[thread_index].store(false, std::memory_order_release);
+            auto prev_state = ThreadState::kActive;
+            if (!thread_state_[thread_index].compare_exchange_strong(
+                    prev_state, ThreadState::kSleeping, 
+                    std::memory_order_release, std::memory_order_relaxed)) {
+                // State was changed by another thread
+                continue;
+            }
             thread_idle_since_[thread_index].store(
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 std::memory_order_release);
@@ -378,45 +380,17 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             std::atomic_thread_fence(std::memory_order_seq_cst);
 
             // Check if we got a wakeup signal before going to sleep
-            if (CheckAndDrainWakeup(thread_index)) {
-                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-                continue;
-            }
-            if (is_shutting_down_.load(std::memory_order_acquire)) {
-                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-                continue;
-            }
-
-            // Check to prevent race conditions where a wakeup comes in right before sleep
-            fd_set read_set;
-            FD_ZERO(&read_set);
-            FD_SET(notify_fds_[thread_index], &read_set);
-            struct timeval tv = {0, 0}; // Non-blocking check
-            
-            int select_result = select(notify_fds_[thread_index] + 1, &read_set, nullptr, nullptr, &tv);
-            if (select_result > 0 && FD_ISSET(notify_fds_[thread_index], &read_set)) {
-                // Wakeup signal detected, drain it and don't sleep
-                CheckAndDrainWakeup(thread_index);
-                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
-                continue;
-            }
-
-            std::atomic_thread_fence(std::memory_order_seq_cst);
-            
-            if (CheckAndDrainWakeup(thread_index) || is_shutting_down_.load(std::memory_order_acquire)) {
+            if (CheckAndDrainWakeup(thread_index) || 
+                is_shutting_down_.load(std::memory_order_acquire) ||
+                !queue.IsEmpty()) {
                 thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
                 continue;
             }
 
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
-            if (is_shutting_down_.load(std::memory_order_acquire)) break;
 
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-            thread_active_[thread_index].store(true, std::memory_order_release);
-
-            if (is_shutting_down_.load(std::memory_order_acquire)) {
-                continue;
-            }
+            if (is_shutting_down_.load(std::memory_order_acquire)) break;
 
             if (ready > 0) {
                 // Process events
