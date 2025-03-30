@@ -423,7 +423,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             }
         } else {
             // Process events or tasks that were found during spinning
-            if (spin_result == SpinResult::kEventsProcessed) {
+            if (spin_result == SpinResult::kEventsFound) {
                 int ready = epoll_wait(epoll_fd, events, kMaxEvents, 0); // Non-blocking
                 if (ready > 0) {
                     for (int i = 0; i < ready; ++i) {
@@ -485,18 +485,18 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
         
         if (is_shutting_down_.load(std::memory_order_acquire)) {
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
-            return SpinResult::kEventsProcessed;
+            return SpinResult::kEventsFound;
         }
         // Check for wakeups before doing anything else
         if (CheckAndDrainWakeup(thread_index)) {
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
-            return SpinResult::kEventsProcessed; // Treat as event processed to re-check queue
+            return SpinResult::kEventsFound; // Treat as event processed to re-check queue
         }
         // Check for new tasks
         auto task_opt = queue.PopNonBlocking();
         if (task_opt && *task_opt) {
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-            return SpinResult::kTaskProcessed; // Task found, let main loop process
+            return SpinResult::kTaskFound; // Task found, let main loop process
         }
 
         // No tasks, check for epoll events without blocking
@@ -505,7 +505,7 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
 
         if (ready > 0) {
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
-            return SpinResult::kEventsProcessed; // Events found, let main loop process
+            return SpinResult::kEventsFound; // Events found, let main loop process
         } else if (ready < 0 && errno != EINTR) {
             LOG_ERROR() << "epoll_wait failed during spinning: " << strerror(errno);
         }

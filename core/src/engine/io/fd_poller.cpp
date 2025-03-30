@@ -405,7 +405,6 @@ bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind) {
         return false;
     }
     
-    // weak_ptr from the strong reference for registration
     auto weak_self = std::weak_ptr<FdPoller::Impl>(self_ptr);
     uint32_t epoll_events = KindToEpollEvents(kind);
 
@@ -420,19 +419,30 @@ bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind) {
             self->WakeupWaiters();
         }
     };
-    // Register with epoll
-    std::lock_guard<std::mutex> lock(epoll_mutex_);
-    // Unregister any existing registration first to avoid duplicates
-    if (use_epoll_ && task_processor_ && registered_fd_index_ && fd_ != fd) {
-        try {
-            task_processor_->UnregisterFd(fd_);
-        } catch (const std::exception& ex) {
-            LOG_DEBUG() << "Failed to unregister previous fd: " << ex.what();
+
+    int old_fd = -1;
+    bool need_unregister = false;
+    engine::TaskProcessor* processor_to_unregister = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
+        if (use_epoll_ && task_processor_ && registered_fd_index_) {
+            old_fd = fd_;
+            need_unregister = true;
+            processor_to_unregister = task_processor_;
         }
     }
+    if (need_unregister) {
+        try {
+            processor_to_unregister->UnregisterFd(old_fd);
+        } catch (const std::exception& ex) {
+            LOG_DEBUG() << "Failed to unregister previous fd " << old_fd << ": " << ex.what();
+        }
+    }
+
     auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
     
     if (reg_index != std::numeric_limits<std::size_t>::max()) {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
         fd_ = fd;
         registered_fd_index_ = reg_index;
         use_epoll_ = true;
@@ -469,10 +479,10 @@ void FdPoller::Impl::ResetEpollRegistration() {
         if (use_epoll_ && fd_ >= 0 && registered_fd_index_ && task_processor_) {
             fd_to_unregister = fd_;
             processor = task_processor_;
+            registered_fd_index_.reset();
+            use_epoll_ = false;
+            task_processor_ = nullptr;
         }
-        registered_fd_index_.reset();
-        use_epoll_ = false;
-        task_processor_ = nullptr;
     }
     
     if (fd_to_unregister >= 0 && processor) {

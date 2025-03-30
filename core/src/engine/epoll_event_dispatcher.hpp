@@ -127,8 +127,8 @@ private:
 
     // Spin result
     enum class SpinResult {
-        kTaskProcessed,  // Task was processed
-        kEventsProcessed, // Epoll events were processed
+        kTaskFound,  // Task was found
+        kEventsFound, // Epoll events were found
         kSpinningFailed   // Spinning failed, go to epoll_wait
     };
 
@@ -140,7 +140,7 @@ private:
     
     // Spinning settings
     static constexpr std::chrono::milliseconds kSpinningDuration{1};
-    static constexpr int kSpinningIterations = 10000;
+    static constexpr int kSpinningIterations = 1000;
 };
 
 }  // namespace engine
