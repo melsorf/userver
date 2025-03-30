@@ -94,6 +94,11 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
     if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
         return;
     }
+
+    static thread_local pid_t original_pid = getpid();
+    if (original_pid != getpid()) {
+        return;
+    }
     
     // Write to eventfd to wake up thread
     const uint64_t value = 1;
