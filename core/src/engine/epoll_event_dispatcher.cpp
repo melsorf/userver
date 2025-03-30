@@ -97,18 +97,21 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
     
     // Write to eventfd to wake up thread
     const uint64_t value = 1;
-    ssize_t bytes_written = write(notify_fds_[thread_index], &value, sizeof(value));
+    ssize_t bytes_written = 0;
     
-    if (bytes_written != sizeof(value)) {
-        if (bytes_written == -1) {
-            if (!is_shutting_down_.load(std::memory_order_acquire)) {
-                LOG_ERROR() << "Failed to write to eventfd for thread " << thread_index 
-                          << ": " << strerror(errno);
-            }
-        } else {
-            LOG_ERROR() << "Incomplete write to eventfd: " << bytes_written << " of " 
-                      << sizeof(value) << " bytes";
+    do {
+        bytes_written = write(notify_fds_[thread_index], &value, sizeof(value));
+        if (bytes_written == -1 && 
+            (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) && 
+            !is_shutting_down_.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+            continue;
         }
+        break;
+    } while (true);
+    
+    if (bytes_written != sizeof(value) && bytes_written != -1 && !is_shutting_down_.load(std::memory_order_acquire)) {
+        LOG_ERROR() << "Incomplete write to eventfd: " << bytes_written << " of " << sizeof(value) << " bytes";
     }
 }
 
@@ -212,9 +215,9 @@ void EpollEventDispatcher::UnregisterFd(int fd) {
             found = true;
         }
     }
-    
     if (found) {
         RemoveFromEpoll(thread_index, fd);
+        WakeupThread(thread_index);
     }
 }
 
@@ -281,6 +284,7 @@ void EpollEventDispatcher::ProcessOneEpollEvent(std::size_t thread_index, int fd
     
     // Look up the callback
     EventCallback callback;
+    bool expired = false;
     {
         std::lock_guard<std::mutex> lock(fd_mutex_);
         auto it = fd_registrations_.find(fd);
@@ -292,11 +296,15 @@ void EpollEventDispatcher::ProcessOneEpollEvent(std::size_t thread_index, int fd
             if (it->second.owner.expired()) {
                 // Owner is gone, unregister
                 LOG_DEBUG() << "Removing fd " << fd << " with expired owner";
+                expired = true;
                 fd_registrations_.erase(it);
-                RemoveFromEpoll(thread_index, fd);
-                return;
             }
         }
+    }
+
+    if (expired) {
+        RemoveFromEpoll(thread_index, fd);
+        return;
     }
     
     // Execute the callback
@@ -355,12 +363,15 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         SpinResult spin_result = SpinForTaskOrEvent(thread_index, queue, events);
 
         if (spin_result == SpinResult::kSpinningFailed) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             // Update thread state before sleeping
             thread_state_[thread_index].store(ThreadState::kSleeping, std::memory_order_release);
             thread_active_[thread_index].store(false, std::memory_order_release);
             thread_idle_since_[thread_index].store(
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 std::memory_order_release);
+                
+            std::atomic_thread_fence(std::memory_order_seq_cst);
 
             // Check if we got a wakeup signal before going to sleep
             if (CheckAndDrainWakeup(thread_index)) {
@@ -386,7 +397,15 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 continue;
             }
 
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            
+            if (CheckAndDrainWakeup(thread_index) || is_shutting_down_.load(std::memory_order_acquire)) {
+                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+                continue;
+            }
+
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
             thread_active_[thread_index].store(true, std::memory_order_release);
 
@@ -401,7 +420,6 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 }
             } else if (ready < 0 && errno != EINTR) {
                 LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         } else {
             // Process events or tasks that were found during spinning
@@ -490,11 +508,6 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
             return SpinResult::kEventsProcessed; // Events found, let main loop process
         } else if (ready < 0 && errno != EINTR) {
             LOG_ERROR() << "epoll_wait failed during spinning: " << strerror(errno);
-        }
-
-        if (CheckAndDrainWakeup(thread_index)) {
-            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
-            return SpinResult::kEventsProcessed; // Treat as event processed to re-check queue
         }
 
         std::this_thread::yield();
