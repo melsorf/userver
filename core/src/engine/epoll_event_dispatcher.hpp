@@ -103,9 +103,6 @@ private:
     // Per-thread eventfd for notifications 
     std::vector<int> notify_fds_;
     
-    // Track which threads are busy/idle
-    std::unique_ptr<std::atomic<bool>[]> thread_active_;
-    
     // Timestamp when threads went idle
     std::unique_ptr<std::atomic<uint64_t>[]> thread_idle_since_;
     
