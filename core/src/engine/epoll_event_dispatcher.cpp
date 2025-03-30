@@ -94,21 +94,20 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
     if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
         return;
     }
-
-    static thread_local pid_t original_pid = getpid();
-    if (original_pid != getpid()) {
-        return;
-    }
     
     // Write to eventfd to wake up thread
     const uint64_t value = 1;
     ssize_t bytes_written = 0;
     
+    const int max_retries = 10;
+    int retry_count = 0;
+    
     do {
         bytes_written = write(notify_fds_[thread_index], &value, sizeof(value));
         if (bytes_written == -1 && 
             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) && 
-            !is_shutting_down_.load(std::memory_order_acquire)) {
+            !is_shutting_down_.load(std::memory_order_acquire) &&
+            retry_count++ < max_retries) {
             std::this_thread::yield();
             continue;
         }
@@ -326,6 +325,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                                         std::shared_ptr<impl::TaskProcessorPools> pools) {
     if (thread_index >= thread_count_) {
         LOG_ERROR() << "Invalid thread index: " << thread_index;
+        return;
+    }
+
+    static const pid_t parent_pid = getpid();
+    if (parent_pid != getpid()) {
+        // We're in a forked child process, don't enter the event loop to avoid hanging????
+        LOG_DEBUG() << "Detected forked process, skipping event processing loop";
         return;
     }
 
