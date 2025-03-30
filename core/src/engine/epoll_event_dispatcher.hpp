@@ -136,7 +136,7 @@ private:
     std::unique_ptr<std::atomic<ThreadState>[]> thread_state_;
     
     // Spinning settings
-    static constexpr std::chrono::milliseconds kSpinningDuration{1};
+    static constexpr std::chrono::milliseconds kSpinningDuration{10};
     static constexpr int kSpinningIterations = 1000;
 };
 

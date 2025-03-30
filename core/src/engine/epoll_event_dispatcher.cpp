@@ -133,7 +133,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() const {
     std::optional<std::size_t> best_thread;
     
     for (size_t i = 0; i < thread_count_; ++i) {
-        if (hread_state_[i].load(std::memory_order_relaxed) == ThreadState::kSleeping) {
+        if (thread_state_[i].load(std::memory_order_relaxed) == ThreadState::kSleeping) {
             uint64_t idle_since = thread_idle_since_[i].load(std::memory_order_relaxed);
             if (idle_since > max_idle_time) {
                 max_idle_time = idle_since;
