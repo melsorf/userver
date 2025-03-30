@@ -436,7 +436,6 @@ bool EpollEventDispatcher::CheckAndDrainWakeup(std::size_t thread_index) {
 EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     std::size_t thread_index, 
     TaskQueue& queue, 
-    std::shared_ptr<impl::TaskProcessorPools> pools,
     struct epoll_event* events) {
     
     thread_state_[thread_index].store(ThreadState::kSpinning, std::memory_order_relaxed);

@@ -133,8 +133,7 @@ private:
     };
 
     // Spin waiting for tasks or events
-    SpinResult SpinForTaskOrEvent(std::size_t thread_index, TaskQueue& queue, 
-        std::shared_ptr<impl::TaskProcessorPools> pools,
+    SpinResult SpinForTaskOrEvent(std::size_t thread_index, TaskQueue& queue,
         struct epoll_event* events);
     
     std::unique_ptr<std::atomic<ThreadState>[]> thread_state_;
