@@ -28,9 +28,13 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     }
     
     SetupThreadFds();
+    for (size_t i = 0; i < thread_count_; ++i) {
+        WakeupThread(i);
+    }
 }
 
 EpollEventDispatcher::~EpollEventDispatcher() {
+    Shutdown();
     CleanupThreadFds();
 }
 
@@ -87,11 +91,25 @@ void EpollEventDispatcher::Shutdown() {
 }
 
 void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
-    UASSERT(thread_index < thread_count_);
+    if (thread_index >= thread_count_ || notify_fds_[thread_index] == -1) {
+        return;
+    }
     
     // Write to eventfd to wake up thread
     const uint64_t value = 1;
-    write(notify_fds_[thread_index], &value, sizeof(value));
+    ssize_t bytes_written = write(notify_fds_[thread_index], &value, sizeof(value));
+    
+    if (bytes_written != sizeof(value)) {
+        if (bytes_written == -1) {
+            if (!is_shutting_down_.load(std::memory_order_acquire)) {
+                LOG_ERROR() << "Failed to write to eventfd for thread " << thread_index 
+                          << ": " << strerror(errno);
+            }
+        } else {
+            LOG_ERROR() << "Incomplete write to eventfd: " << bytes_written << " of " 
+                      << sizeof(value) << " bytes";
+        }
+    }
 }
 
 void EpollEventDispatcher::PostEvent() {
@@ -175,7 +193,7 @@ std::size_t EpollEventDispatcher::RegisterFd(int fd, uint32_t events, EventCallb
         fd_registrations_.erase(fd);
         return std::numeric_limits<std::size_t>::max();
     }
-    
+    WakeupThread(thread_index);
     return thread_index;
 }
 
@@ -257,23 +275,7 @@ bool EpollEventDispatcher::ModifyEpoll(std::size_t thread_index, int fd, uint32_
 void EpollEventDispatcher::ProcessOneEpollEvent(std::size_t thread_index, int fd, uint32_t events) {
     if (fd == notify_fds_[thread_index]) {
         // Just a wakeup notification, read from eventfd to clear it
-        while (true) {
-            uint64_t value;
-            int ret = read(fd, &value, sizeof(value));
-            if (ret < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // Drained all notifications
-                    break;
-                }
-                if (errno != EINTR) {
-                    LOG_ERROR() << "Error reading from eventfd: " << strerror(errno);
-                    break;
-                }
-                // EINTR - retry
-            } else {
-                // Successfully read
-            }
-        }
+        CheckAndDrainWakeup(thread_index);
         return;
     }
     
@@ -369,12 +371,28 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
                 continue;
             }
+
+            // Check to prevent race conditions where a wakeup comes in right before sleep
+            fd_set read_set;
+            FD_ZERO(&read_set);
+            FD_SET(notify_fds_[thread_index], &read_set);
+            struct timeval tv = {0, 0}; // Non-blocking check
+            
+            int select_result = select(notify_fds_[thread_index] + 1, &read_set, nullptr, nullptr, &tv);
+            if (select_result > 0 && FD_ISSET(notify_fds_[thread_index], &read_set)) {
+                // Wakeup signal detected, drain it and don't sleep
+                CheckAndDrainWakeup(thread_index);
+                thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+                continue;
+            }
+
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
+            thread_active_[thread_index].store(true, std::memory_order_release);
+
             if (is_shutting_down_.load(std::memory_order_acquire)) {
                 continue;
             }
-            thread_active_[thread_index].store(true, std::memory_order_relaxed);
 
             if (ready > 0) {
                 // Process events
@@ -421,7 +439,9 @@ bool EpollEventDispatcher::CheckAndDrainWakeup(std::size_t thread_index) {
                 break;
             }
             if (errno != EINTR) {
-                LOG_ERROR() << "Error reading from eventfd: " << strerror(errno);
+                if (!is_shutting_down_.load(std::memory_order_acquire)) {
+                    LOG_ERROR() << "Error reading from eventfd: " << strerror(errno);
+                }
                 break;
             }
             // EINTR - retry
@@ -444,6 +464,16 @@ EpollEventDispatcher::SpinResult EpollEventDispatcher::SpinForTaskOrEvent(
     // Spin
     for (int spin_count = 0; spin_count < kSpinningIterations &&
         std::chrono::steady_clock::now() - spin_start < kSpinningDuration; ++spin_count) {
+        
+        if (is_shutting_down_.load(std::memory_order_acquire)) {
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+            return SpinResult::kEventsProcessed;
+        }
+        // Check for wakeups before doing anything else
+        if (CheckAndDrainWakeup(thread_index)) {
+            thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_release);
+            return SpinResult::kEventsProcessed; // Treat as event processed to re-check queue
+        }
         // Check for new tasks
         auto task_opt = queue.PopNonBlocking();
         if (task_opt && *task_opt) {
