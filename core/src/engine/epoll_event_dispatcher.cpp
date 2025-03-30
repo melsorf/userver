@@ -28,9 +28,6 @@ EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     }
     
     SetupThreadFds();
-    for (size_t i = 0; i < thread_count_; ++i) {
-        WakeupThread(i);
-    }
 }
 
 EpollEventDispatcher::~EpollEventDispatcher() {
@@ -108,7 +105,6 @@ void EpollEventDispatcher::WakeupThread(std::size_t thread_index) {
             (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) && 
             !is_shutting_down_.load(std::memory_order_acquire) &&
             retry_count++ < max_retries) {
-            std::this_thread::yield();
             continue;
         }
         break;
@@ -328,19 +324,11 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         return;
     }
 
-    static const pid_t parent_pid = getpid();
-    if (parent_pid != getpid()) {
-        // We're in a forked child process, don't enter the event loop to avoid hanging????
-        LOG_DEBUG() << "Detected forked process, skipping event processing loop";
-        return;
-    }
-
     int epoll_fd = epoll_fds_[thread_index];
     if (epoll_fd == -1) {
         LOG_ERROR() << "Invalid epoll fd for thread " << thread_index;
         return;
     }
-
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
@@ -348,9 +336,13 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
         thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
         thread_active_[thread_index].store(true, std::memory_order_relaxed);
 
-        // First try to get a task without blocking
-        auto task_opt = queue.PopNonBlocking();
-        if (task_opt && *task_opt) {
+        bool processed_any_tasks = false;
+        while (true) {
+            auto task_opt = queue.PopNonBlocking();
+            if (!task_opt || !*task_opt) {
+                break;  // No more tasks
+            }
+            processed_any_tasks = true;
             auto& task_ptr = *task_opt;
             // Process task
             bool has_failed = false;
@@ -361,13 +353,14 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 LOG_ERROR() << "Exception in task: " << ex.what();
                 has_failed = true;
             }
-
             pools->GetCoroPool().AccountStackUsage();
-
             if (has_failed || task_ptr->IsFinished()) {
                 task_ptr->FinishDetached();
             }
-            continue;  // Go back and check for more tasks
+        }
+        if (is_shutting_down_.load(std::memory_order_acquire)) break;
+        if (processed_any_tasks) {
+            continue;
         }
 
         // No tasks, start spinning
@@ -416,6 +409,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             }
 
             int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+            if (is_shutting_down_.load(std::memory_order_acquire)) break;
 
             thread_state_[thread_index].store(ThreadState::kActive, std::memory_order_relaxed);
             thread_active_[thread_index].store(true, std::memory_order_release);
@@ -426,7 +420,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
 
             if (ready > 0) {
                 // Process events
-                for (int i = 0; i < ready; ++i) {
+                for (int i = 0; i < ready && !is_shutting_down_.load(std::memory_order_acquire); ++i) {
                     ProcessOneEpollEvent(thread_index, events[i].data.fd, events[i].events);
                 }
             } else if (ready < 0 && errno != EINTR) {
