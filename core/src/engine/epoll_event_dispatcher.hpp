@@ -10,15 +10,15 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <memory>
+#include <map>
 #include <mutex>
-#include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include <engine/task/task_queue.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
+
 
 USERVER_NAMESPACE_BEGIN
 
@@ -28,109 +28,65 @@ namespace impl {
 class TaskProcessorPools;
 }
 
+struct FdCallbackInfo {
+    std::function<void(uint32_t)> callback;
+    uint32_t requested_events;
+    size_t owner_thread;
+};
+
 class EpollEventDispatcher {
 public:
     explicit EpollEventDispatcher(size_t thread_count);
-    
     ~EpollEventDispatcher();
-    
-    // Non-copyable, non-movable
-    EpollEventDispatcher(const EpollEventDispatcher&) = delete;
-    EpollEventDispatcher& operator=(const EpollEventDispatcher&) = delete;
-    EpollEventDispatcher(EpollEventDispatcher&&) = delete;
-    EpollEventDispatcher& operator=(EpollEventDispatcher&&) = delete;
 
-    /// @brief Process events using epoll (called by worker threads)
-    void ProcessEvents(
-        std::size_t thread_index, 
-        TaskQueue& queue, 
+    // Process events using epoll (called by worker threads)
+    void ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
         std::shared_ptr<impl::TaskProcessorPools> pools);
     
-    /// @brief Register a file descriptor with epoll
-    std::size_t RegisterFd(
-        int fd, 
-        uint32_t events, 
-        std::function<void(uint32_t)> callback, 
-        std::weak_ptr<void> owner = {});
+    // Register a file descriptor with EPOLLET
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+    std::weak_ptr<void> owner = {});
     
+    // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    /// @brief Wake up a worker thread to process pending events
-    /// Automatically selects the best thread to wake up
+    // Post an event to wake up a worker thread
     void PostEvent();
     
-    /// @brief Wake up a specific worker thread
+    // Post an event to wake up a specific worker thread
     void PostEvent(std::size_t thread_index);
     
-    /// @brief Initiate shutdown of the event dispatcher
+    // Initiate shutdown
     void Shutdown();
     
-    /// @brief Check if shutdown is in progress
-    bool IsShuttingDown() const { 
-        return is_shutting_down_.load(std::memory_order_acquire); 
-    }
-
-private:
-    /// @brief Information about registered file descriptors
-    struct FdCallbackInfo {
-        std::function<void(uint32_t)> callback;  // Callback to invoke on events
-        uint32_t requested_events;               // Event mask requested during registration
-        size_t owner_thread;                     // Thread that owns this FD (for load balancing)
-    };
-
-    /// @brief Thread state for efficient load balancing
-    enum class ThreadState {
-        kSpinning,   // Thread is actively processing
-        kSleeping,   // Thread is blocking in epoll_wait
-        kBusy        // Thread is executing a task
-    };
-
-    /// @brief Get the current state of a worker thread
-    ThreadState GetThreadState(std::size_t thread_index) const;
-
-    /// @brief Select the best thread to handle a new event
+    // Check if shutdown is requested
+    bool IsShuttingDown() const { return is_shutting_down_.load(std::memory_order_acquire); }
+    
+    // Returns the best thread to handle this task
     std::optional<std::size_t> SelectThreadToWakeup();
 
-    /// @brief Create an epoll instance
-    int CreateEpollInstance() const;
-
-    /// @brief Create a notification channel (eventfd)
-    int CreateNotificationChannel() const;
-
-    /// @brief Add a file descriptor to an epoll instance
-    bool AddToEpoll(int epoll_fd, int fd, uint32_t events, uint64_t data) const;
-
-    /// @brief Remove a file descriptor from an epoll instance
-    bool RemoveFromEpoll(int epoll_fd, int fd) const;
-
-    /// Number of worker threads
-    const size_t thread_count_;
+private:
+    // Thread count
+    size_t thread_count_{0};
     
-    /// Per-thread epoll file descriptors
+    // Per-thread epoll fds
     std::vector<int> thread_epoll_fds_;
     
-    /// Per-thread notification eventfds
+    // Per-thread notification eventfds
     std::vector<int> thread_notify_fds_;
     
-    /// Thread spinning state (actively processing vs waiting)
-    std::vector<std::atomic<bool>> thread_spinning_;
+    // Thread states
+    std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
+    std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
     
-    /// Thread sleep start time (for fair load balancing)
-    std::vector<std::atomic<uint64_t>> thread_sleep_start_time_;
-    
-    /// Mutex for file descriptor operations
+    // Mutex for fd operations
     std::mutex fd_mutex_;
-    
-    /// Map of registered file descriptors to their callbacks
     std::unordered_map<int, FdCallbackInfo> fd_callbacks_;
     
-    /// Shutdown flag
+    // Shutdown flag
     std::atomic<bool> is_shutting_down_{false};
 
-    /// Mutex for the fd ownership registry
     static inline std::mutex registry_mutex_;
-    
-    /// Map of file descriptors to their owners (for lifetime management)
     static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
 };
 
