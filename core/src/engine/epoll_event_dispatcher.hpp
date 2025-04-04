@@ -1,6 +1,7 @@
 #pragma once
 
 #ifdef __linux__
+
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -15,8 +16,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include <engine/task/task_queue.hpp>
 #include <userver/logging/log.hpp>
-#include <userver/utils/assert.hpp>
+#include <userver/utils/fast_scope_guard.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -26,118 +28,110 @@ namespace impl {
 class TaskProcessorPools;
 }
 
-class TaskQueue;
-
-// Thread-safe manager for epoll-based IO events that integrates with TaskProcessor
-class EpollEventDispatcher final {
+class EpollEventDispatcher {
 public:
-    using EventCallback = std::function<void(uint32_t)>;
-    
     explicit EpollEventDispatcher(size_t thread_count);
+    
     ~EpollEventDispatcher();
-
+    
+    // Non-copyable, non-movable
     EpollEventDispatcher(const EpollEventDispatcher&) = delete;
-    EpollEventDispatcher(EpollEventDispatcher&&) = delete;
     EpollEventDispatcher& operator=(const EpollEventDispatcher&) = delete;
+    EpollEventDispatcher(EpollEventDispatcher&&) = delete;
     EpollEventDispatcher& operator=(EpollEventDispatcher&&) = delete;
 
-    void ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
-                        std::shared_ptr<impl::TaskProcessorPools> pools);
+    /// @brief Process events using epoll (called by worker threads)
+    void ProcessEvents(
+        std::size_t thread_index, 
+        TaskQueue& queue, 
+        std::shared_ptr<impl::TaskProcessorPools> pools);
     
-    // Register a file descriptor with EPOLLET mode
-    std::size_t RegisterFd(int fd, uint32_t events, EventCallback callback, 
-                            std::weak_ptr<void> owner = {});
+    /// @brief Register a file descriptor with epoll
+    std::size_t RegisterFd(
+        int fd, 
+        uint32_t events, 
+        std::function<void(uint32_t)> callback, 
+        std::weak_ptr<void> owner = {});
     
-    // Unregister a file descriptor
     void UnregisterFd(int fd);
     
-    // Post an event to wake up threads
+    /// @brief Wake up a worker thread to process pending events
+    /// Automatically selects the best thread to wake up
     void PostEvent();
     
-    // Signal shutdown
+    /// @brief Wake up a specific worker thread
+    void PostEvent(std::size_t thread_index);
+    
+    /// @brief Initiate shutdown of the event dispatcher
     void Shutdown();
+    
+    /// @brief Check if shutdown is in progress
+    bool IsShuttingDown() const { 
+        return is_shutting_down_.load(std::memory_order_acquire); 
+    }
 
 private:
-  // Information about registered callbacks
-    struct FdRegistration {
-        EventCallback callback;
-        uint32_t events;
-        std::weak_ptr<void> owner;
-        std::chrono::steady_clock::time_point last_activity;
-        std::size_t thread_index;
+    /// @brief Information about registered file descriptors
+    struct FdCallbackInfo {
+        std::function<void(uint32_t)> callback;  // Callback to invoke on events
+        uint32_t requested_events;               // Event mask requested during registration
+        size_t owner_thread;                     // Thread that owns this FD (for load balancing)
     };
 
-    // Add fd to epoll for the specified thread
-    bool AddToEpoll(std::size_t thread_index, int fd, uint32_t events);
-    
-    // Remove fd from epoll for the specified thread
-    bool RemoveFromEpoll(std::size_t thread_index, int fd);
-    
-    // Modify epoll entry for the specified thread
-    bool ModifyEpoll(std::size_t thread_index, int fd, uint32_t events);
-    
-    // Wake up a specific thread
-    void WakeupThread(std::size_t thread_index);
-    
-    // Choose the best thread to wake up based on thread state
-    std::optional<std::size_t> SelectThreadToWakeup() const;
-    
-    // Create eventfd for thread notification
-    void SetupThreadFds();
-    
-    // Clean up resources
-    void CleanupThreadFds();
-    
-    // Process one epoll_wait result
-    void ProcessOneEpollEvent(std::size_t thread_index, int fd, uint32_t events);
-
-    // Returns true if a wakeup was requested for the specified thread
-    bool CheckAndDrainWakeup(std::size_t thread_index);
-
-    // Store thread count for bounds checking
-    size_t thread_count_{0};
-    
-    // Per-thread epoll file descriptors
-    std::vector<int> epoll_fds_;
-    
-    // Per-thread eventfd for notifications 
-    std::vector<int> notify_fds_;
-    
-    // Timestamp when threads went idle
-    std::unique_ptr<std::atomic<uint64_t>[]> thread_idle_since_;
-    
-    // Thread-safe fd registration storage
-    std::mutex fd_mutex_;
-    std::unordered_map<int, FdRegistration> fd_registrations_;
-    
-    // Flag to signal shutdown
-    std::atomic<bool> is_shutting_down_{false};
-    
-    // Epoll events buffer reused across calls
-    static constexpr int kMaxEvents = 64;
-
+    /// @brief Thread state for efficient load balancing
     enum class ThreadState {
-        kActive, // Thread is processing tasks
-        kSpinning, // No tasks, thread is spinning
-        kSleeping // No tasks, thread is sleeping in epoll_wait
+        kSpinning,   // Thread is actively processing
+        kSleeping,   // Thread is blocking in epoll_wait
+        kBusy        // Thread is executing a task
     };
 
-    // Spin result
-    enum class SpinResult {
-        kTaskFound,  // Task was found
-        kEventsFound, // Epoll events were found
-        kSpinningFailed   // Spinning failed, go to epoll_wait
-    };
+    /// @brief Get the current state of a worker thread
+    ThreadState GetThreadState(std::size_t thread_index) const;
 
-    // Spin waiting for tasks or events
-    SpinResult SpinForTaskOrEvent(std::size_t thread_index, TaskQueue& queue,
-        struct epoll_event* events);
+    /// @brief Select the best thread to handle a new event
+    std::optional<std::size_t> SelectThreadToWakeup();
+
+    /// @brief Create an epoll instance
+    int CreateEpollInstance() const;
+
+    /// @brief Create a notification channel (eventfd)
+    int CreateNotificationChannel() const;
+
+    /// @brief Add a file descriptor to an epoll instance
+    bool AddToEpoll(int epoll_fd, int fd, uint32_t events, uint64_t data) const;
+
+    /// @brief Remove a file descriptor from an epoll instance
+    bool RemoveFromEpoll(int epoll_fd, int fd) const;
+
+    /// Number of worker threads
+    const size_t thread_count_;
     
-    std::unique_ptr<std::atomic<ThreadState>[]> thread_state_;
+    /// Per-thread epoll file descriptors
+    std::vector<int> thread_epoll_fds_;
     
-    // Spinning settings
-    static constexpr std::chrono::milliseconds kSpinningDuration{10};
-    static constexpr int kSpinningIterations = 1000;
+    /// Per-thread notification eventfds
+    std::vector<int> thread_notify_fds_;
+    
+    /// Thread spinning state (actively processing vs waiting)
+    std::vector<std::atomic<bool>> thread_spinning_;
+    
+    /// Thread sleep start time (for fair load balancing)
+    std::vector<std::atomic<uint64_t>> thread_sleep_start_time_;
+    
+    /// Mutex for file descriptor operations
+    std::mutex fd_mutex_;
+    
+    /// Map of registered file descriptors to their callbacks
+    std::unordered_map<int, FdCallbackInfo> fd_callbacks_;
+    
+    /// Shutdown flag
+    std::atomic<bool> is_shutting_down_{false};
+
+    /// Mutex for the fd ownership registry
+    static inline std::mutex registry_mutex_;
+    
+    /// Map of file descriptors to their owners (for lifetime management)
+    static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
 };
 
 }  // namespace engine
