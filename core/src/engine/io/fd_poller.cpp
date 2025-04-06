@@ -128,11 +128,11 @@ struct FdPoller::Impl final
     void SetupWatcher(int fd, Kind kind);
 
 #ifdef __linux__
-    void TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet);
+    bool TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet);
 
     void CleanupPreviousEpollRegistration();
 
-    void TryGetCurrentTaskProcessor();
+    engine::TaskProcessor* TryGetCurrentTaskProcessor();
 #endif
 
     // ContextAccessor implementation
