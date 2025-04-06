@@ -4,6 +4,7 @@
 /// @brief @copybrief engine::io::Socket
 
 #include <sys/socket.h>
+#include <atomic>
 
 #include <initializer_list>
 
