@@ -159,8 +159,6 @@ void EpollEventDispatcher::ProcessEvents(
         }
         worker_thread_ids_[thread_index] = std::this_thread::get_id();
     }
-
-    (void)pools;
     
     // Get thread's epoll fd
     int epoll_fd = thread_epoll_fds_[thread_index];
@@ -171,12 +169,22 @@ void EpollEventDispatcher::ProcessEvents(
 
     thread_local int cleanup_counter = 0;
     constexpr int kCleanupInterval = 500;
+
+    thread_local int stack_monitor_counter = 0;
+    constexpr int kStackMonitorInterval = 100;
+
     epoll_event events[kMaxEvents];
     
     while (!IsShuttingDown()) {
         if (++cleanup_counter >= kCleanupInterval) {
             cleanup_counter = 0;
             CleanupDeadOwners();
+        }
+        if (++stack_monitor_counter >= kStackMonitorInterval) {
+            stack_monitor_counter = 0;
+            if (pools && pools->stack_usage_monitor) {
+                pools->stack_usage_monitor->AccountStackUsage();
+            }
         }
         // Check for tasks first
         bool processed_task = false;
