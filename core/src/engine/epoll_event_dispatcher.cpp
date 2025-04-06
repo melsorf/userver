@@ -66,7 +66,8 @@ void WriteEvent(int eventfd) {
 EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     : thread_count_(thread_count),
       thread_epoll_fds_(thread_count, -1),
-      thread_notify_fds_(thread_count, -1) {
+      thread_notify_fds_(thread_count, -1),
+      worker_thread_ids_(thread_count, std::thread::id()) {
 
     thread_spinning_ = std::make_unique<std::atomic<bool>[]>(thread_count_);
     thread_sleep_start_time_ = std::make_unique<std::atomic<uint64_t>[]>(thread_count_);
@@ -133,6 +134,13 @@ void EpollEventDispatcher::ProcessEvents(
         return;
     }
 
+    if (worker_thread_ids_.size() <= thread_index) {
+        if (worker_thread_ids_.size() < thread_count_) {
+            worker_thread_ids_.resize(thread_count_, std::thread::id());
+        }
+        worker_thread_ids_[thread_index] = std::this_thread::get_id();
+    }
+
     (void)pools;
     
     // Get thread's epoll fd
@@ -184,12 +192,6 @@ void EpollEventDispatcher::ProcessEvents(
                 continue;
             }
         }
-        
-        // If events were detected during spinning, process them
-        if (has_events) {
-            ProcessEpollEvents(thread_index, events, spin_nevents_);
-            continue;
-        }
 
         // Last check before blocking wait
         if (CheckEventFdReady(thread_notify_fds_[thread_index])) {
@@ -240,6 +242,8 @@ void EpollEventDispatcher::ExecuteTask(
     impl::TaskContext* task, 
     std::size_t thread_index) {
     if (!task) return;
+
+    (void)thread_index;
 
     bool success = false;
     try {
@@ -355,7 +359,7 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
         }
         
         // Check if the fd is owned by another thread
-        size_t current_thread = engine::current_task::GetCurrentTaskProcessor().GetWorkerIndex();
+        size_t current_thread = GetCurrentThreadIndex();
         if (it->second.owner_thread != current_thread && it->second.owner_thread < thread_count_) {
             owner_thread = it->second.owner_thread;
             forward_to_other_thread = true;
@@ -394,6 +398,20 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
     } catch (...) {
         LOG_ERROR() << "Unknown exception in fd callback";
     }
+}
+
+std::size_t EpollEventDispatcher::GetCurrentThreadIndex() const {
+    thread_local size_t thread_index = std::numeric_limits<size_t>::max();
+    if (thread_index == std::numeric_limits<size_t>::max()) {
+        auto this_thread_id = std::this_thread::get_id();
+        for (size_t i = 0; i < worker_thread_ids_.size(); ++i) {
+            if (worker_thread_ids_[i] == this_thread_id) {
+                thread_index = i;
+                break;
+            }
+        }
+    }
+    return thread_index;
 }
 
 void EpollEventDispatcher::HandleEpollError() {

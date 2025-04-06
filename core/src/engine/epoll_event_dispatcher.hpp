@@ -129,6 +129,9 @@ private:
     /// @brief Check if an eventfd is ready for reading
     bool CheckEventFdReady(int eventfd);
 
+    /// @brief Get the current thread index
+    size_t GetCurrentThreadIndex() const;
+
     /// Number of worker threads
     const std::size_t thread_count_;
     
@@ -158,6 +161,9 @@ private:
     
     /// Map of file descriptors to their owners (for lifetime management)
     static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
+
+    /// thread_id for each worker thread
+    std::vector<std::thread::id> worker_thread_ids_;
 
     int spin_nevents_{0};
 };
