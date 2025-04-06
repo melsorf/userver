@@ -545,15 +545,19 @@ void Socket::RegisterWithEpoll() {
                     auto* fd_control = ref->fd_control;
                     if (!fd_control) return;
 
-                    if (events & EPOLLIN) {
-                        fd_control->Read().NotifyReady();
-                    }
-                    if (events & EPOLLOUT) {
-                        fd_control->Write().NotifyReady();
-                    }
-                    if (events & (EPOLLERR | EPOLLHUP)) {
-                        fd_control->Read().NotifyReady();
-                        fd_control->Write().NotifyReady();
+                    try {
+                        if (events & EPOLLIN) {
+                            fd_control->Read().NotifyReady();
+                        }
+                        if (events & EPOLLOUT) {
+                            fd_control->Write().NotifyReady();
+                        }
+                        if (events & (EPOLLERR | EPOLLHUP)) {
+                            fd_control->Read().NotifyReady();
+                            fd_control->Write().NotifyReady();
+                        }
+                    } catch (const std::exception& ex) {
+                        LOG_ERROR() << "Exception in epoll callback: " << ex.what();
                     }
                 }
             }, weak_ref);
