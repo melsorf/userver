@@ -41,9 +41,6 @@ Pipe::Pipe() {
 }
 
 PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
-    if (fd_control_) {
-        fd_control_->Read().SetEpollMode(true);
-    }
 }
 
 bool PipeReader::IsValid() const { return !!fd_control_; }
@@ -93,9 +90,6 @@ void PipeReader::Close() {
 }
 
 PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
-    if (fd_control_) {
-        fd_control_->Write().SetEpollMode(true);
-    }
 }
 
 bool PipeWriter::IsValid() const { return !!fd_control_; }

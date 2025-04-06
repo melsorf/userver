@@ -70,15 +70,32 @@ FdPoller::Kind GetUserMode(int ev_events) {
 
 #ifdef __linux__
 uint32_t KindToEpollEvents(FdPoller::Kind kind) {
-    switch (kind) {
-        case FdPoller::Kind::kRead:
-            return EPOLLIN | EPOLLPRI | EPOLLRDHUP | EPOLLET;
-        case FdPoller::Kind::kWrite:
-            return EPOLLOUT | EPOLLET;
-        case FdPoller::Kind::kReadWrite:
-            return EPOLLIN | EPOLLOUT | EPOLLPRI | EPOLLRDHUP | EPOLLET;
+    static const std::unordered_map<FdPoller::Kind, uint32_t> kKindToEpollMap = {
+        {FdPoller::Kind::kRead, EPOLLIN | EPOLLPRI | EPOLLRDHUP | EPOLLET},
+        {FdPoller::Kind::kWrite, EPOLLOUT | EPOLLET},
+        {FdPoller::Kind::kReadWrite, EPOLLIN | EPOLLOUT | EPOLLPRI | EPOLLRDHUP | EPOLLET}
+    };
+    
+    auto it = kKindToEpollMap.find(kind);
+    if (it == kKindToEpollMap.end()) {
+        UINVARIANT(false, "Invalid FdPoller::Kind value: " + std::to_string(static_cast<int>(kind)));
     }
-    UINVARIANT(false, "Invalid kind: " + std::to_string(static_cast<int>(kind)));
+    return it->second;
+}
+
+FdPoller::Kind EpollEventsToKind(uint32_t events) {
+    // Priority: HUP/ERR > RDHUP > IN > OUT
+    if (events & (EPOLLHUP | EPOLLERR)) {
+        return FdPoller::Kind::kReadWrite;
+    } else if ((events & EPOLLIN) && (events & EPOLLOUT)) {
+        return FdPoller::Kind::kReadWrite;
+    } else if (events & EPOLLIN) {
+        return FdPoller::Kind::kRead;
+    } else if (events & EPOLLOUT) {
+        return FdPoller::Kind::kWrite;
+    }
+    
+    return FdPoller::Kind::kRead;
 }
 #endif
 
@@ -107,6 +124,16 @@ struct FdPoller::Impl final
     void WakeupWaiters();
 
     void ResetReady() noexcept { waiters_->GetAndResetSignal(); }
+
+    void SetupWatcher(int fd, Kind kind);
+
+#ifdef __linux__
+    void TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet);
+
+    void CleanupPreviousEpollRegistration();
+
+    void TryGetCurrentTaskProcessor();
+#endif
 
     // ContextAccessor implementation
     bool IsReady() const noexcept override { return waiters_->IsSignaled(); }
@@ -360,70 +387,80 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
 
     bool epoll_registered = false;
 #ifdef __linux__
-    {
-        std::lock_guard<std::mutex> lock(epoll_mutex_);
-        if (use_epoll_ && fd_ >= 0 && registered_fd_index_ && task_processor_) {
-            try {
-                task_processor_->UnregisterFd(fd_);
-            } catch (...) {
-                LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll";
-            }
-            registered_fd_index_.reset();
-            use_epoll_ = false;
-            task_processor_ = nullptr;
-        }
-    }
-
-    if (register_epollet && use_epoll_requested_) {
-        engine::TaskProcessor* current_processor = nullptr;
-        if (engine::current_task::IsTaskProcessorThread()) {
-            current_processor = &engine::current_task::GetTaskProcessor();
-        }
-        if (current_processor) {
-            uint32_t epoll_events = KindToEpollEvents(kind);
-            auto weak_self = GetWeakFromThis();
-            auto callback = [this, kind](uint32_t events) {
-                // Priority: HUP/ERR > RDHUP > IN > OUT
-                FdPoller::Kind userver_kind = kind;
-                
-                if (events & (EPOLLHUP | EPOLLERR)) {
-                    userver_kind = FdPoller::Kind::kReadWrite;
-                } else if ((events & EPOLLIN) && (events & EPOLLOUT)) {
-                    userver_kind = FdPoller::Kind::kReadWrite;
-                } else if (events & EPOLLIN) {
-                    userver_kind = FdPoller::Kind::kRead;
-                } else if (events & EPOLLOUT) {
-                    userver_kind = FdPoller::Kind::kWrite;
-                } else {
-                    return;
-                }
-                
-                events_that_happened_.store(userver_kind, std::memory_order_release);
-                WakeupWaiters();
-            };
-            {
-                std::lock_guard<std::mutex> lock(epoll_mutex_);
-                auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
-                if (reg_index != std::numeric_limits<std::size_t>::max()) {
-                    fd_ = fd;
-                    registered_fd_index_ = reg_index;
-                    use_epoll_ = true;
-                    task_processor_ = current_processor;
-                    epoll_registered = true;
-                }
-            }
-        }
-    }
+    epoll_registered = TryRegisterWithEpoll(fd, kind, register_epollet);
 #endif
-    // Fallback to watcher_ if epoll registration failed or not available
+    // If epoll is not used, we need to set up the watcher
     if (!epoll_registered) {
-        watcher_.Set(fd, GetEvMode(kind));
-#ifdef __linux__
-        use_epoll_ = false;
-        fd_ = fd;
-#endif
+        SetupWatcher(fd, kind);
     }
     state_.store(State::kReadyToUse, std::memory_order_release);
+}
+
+#ifdef __linux__
+bool FdPoller::Impl::TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet) {
+    CleanupPreviousEpollRegistration();
+    
+    if (!register_epollet || !use_epoll_requested_) {
+        return false;
+    }
+
+    engine::TaskProcessor* current_processor = TryGetCurrentTaskProcessor();
+    if (!current_processor) {
+        return false;
+    }
+    
+    uint32_t epoll_events = KindToEpollEvents(kind);
+    auto weak_self = GetWeakFromThis();
+    auto callback = [this](uint32_t events) {
+        FdPoller::Kind userver_kind = EpollEventsToKind(events);
+        events_that_happened_.store(userver_kind, std::memory_order_release);
+        WakeupWaiters();
+    };
+    
+    std::lock_guard<std::mutex> lock(epoll_mutex_);
+    auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
+    if (reg_index != std::numeric_limits<std::size_t>::max()) {
+        fd_ = fd;
+        registered_fd_index_ = reg_index;
+        use_epoll_ = true;
+        task_processor_ = current_processor;
+        return true;
+    }
+    
+    return false;
+}
+
+engine::TaskProcessor* FdPoller::Impl::TryGetCurrentTaskProcessor() {
+    if (engine::current_task::IsTaskProcessorThread()) {
+        try {
+            return &engine::current_task::GetTaskProcessor();
+        } catch (const std::exception& ex) {
+            LOG_DEBUG() << "Failed to get current task processor: " << ex.what();
+        }
+    }
+    return nullptr;
+}
+
+void FdPoller::Impl::CleanupPreviousEpollRegistration() {
+    std::lock_guard<std::mutex> lock(epoll_mutex_);
+    if (use_epoll_ && fd_ >= 0 && registered_fd_index_ && task_processor_) {
+        try {
+            task_processor_->UnregisterFd(fd_);
+        } catch (const std::exception& ex) {
+            LOG_ERROR() << "Failed to unregister fd " << fd_ << " from epoll: " << ex.what();
+        }
+        registered_fd_index_.reset();
+        task_processor_ = nullptr;
+    }
+}
+#endif
+
+void FdPoller::Impl::SetupWatcher(int fd, Kind kind) {
+    watcher_.Set(fd, GetEvMode(kind));
+#ifdef __linux__
+    use_epoll_ = false;
+    fd_ = fd;
+#endif
 }
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }

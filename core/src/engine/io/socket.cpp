@@ -536,47 +536,59 @@ Socket::~Socket() {
 
 void Socket::RegisterWithEpoll() {
     if (!IsValid()) return;
+
+    if (epoll_thread_id_ != std::numeric_limits<std::size_t>::max()) {
+        UnregisterFromEpoll();
+    }
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
+
+        struct SocketRefImpl {
+            int fd;
+            impl::FdControl* fd_control;
+            std::atomic<bool> is_valid{true};
+        };
         
         // This shared_ptr will be kept alive as long as the callback exists
-        auto socket_ref = std::make_shared<SocketRef>(
-            SocketRef{socket_fd, fd_control_.get(), registered_task_processor_});
+        auto socket_ref = std::make_shared<SocketRefImpl>(
+            SocketRefImpl{socket_fd, fd_control_.get()});
         
-        // Use weak_ptr in the callback to safely check if the socket still exists
-        auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
+        // Weak_ptr in the callback to safely check if the socket still exists
+        auto weak_ref = std::weak_ptr<SocketRefImpl>(socket_ref);
         
+        constexpr uint32_t kSocketEvents = EPOLLIN | EPOLLOUT | EPOLLET;
         epoll_thread_id_ = task_processor.RegisterFd(
             socket_fd,
-            EPOLLIN | EPOLLOUT | EPOLLET,
+            kSocketEvents,
             [weak_ref](uint32_t events) {
-                // Try to get a valid reference to the socket
                 if (auto ref = weak_ref.lock()) {
-                    auto& fd_control = ref->fd_control;
-                    int fd = ref->fd;
+                    if (!ref->is_valid) return;
                     
-                    // Verify the FdControlHolder is still valid and points to the same fd
-                    if (fd_control && fd == fd_control->Fd()) {
-                        // Process the events
-                        if (events & EPOLLIN) {
-                            fd_control->Read().NotifyReady();
-                        }
-                        if (events & EPOLLOUT) {
-                            fd_control->Write().NotifyReady();
-                        }
-                        if (events & (EPOLLERR | EPOLLHUP)) {
-                            fd_control->Read().NotifyReady();
-                            fd_control->Write().NotifyReady();
-                        }
+                    auto* fd_control = ref->fd_control;
+                    if (!fd_control) return;
+
+                    if (events & EPOLLIN) {
+                        fd_control->Read().NotifyReady();
+                    }
+                    if (events & EPOLLOUT) {
+                        fd_control->Write().NotifyReady();
+                    }
+                    if (events & (EPOLLERR | EPOLLHUP)) {
+                        fd_control->Read().NotifyReady();
+                        fd_control->Write().NotifyReady();
                     }
                 }
             }, weak_ref);
-            epoll_socket_ref_ = std::move(socket_ref);
+            
+        epoll_socket_ref_ = std::move(socket_ref);
     } catch (const std::exception& ex) {
-        LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
+        LOG_WARNING() << "Failed to register socket with epoll: " << ex.what();
+        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+        registered_task_processor_ = nullptr;
+        epoll_socket_ref_.reset();
     }
 }
 
