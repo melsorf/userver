@@ -205,13 +205,17 @@ private:
     struct SocketRef {
         int fd;
         impl::FdControl* fd_control;
-        std::atomic<bool> is_valid{true};
+        std::atomic<bool> is_valid;
+
+        SocketRef(int fd, impl::FdControl* fd_control) 
+            : fd(fd), fd_control(fd_control), is_valid(true) {}
+        
+        SocketRef(const SocketRef&) = delete;
+        SocketRef& operator=(const SocketRef&) = delete;
     };
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
     std::shared_ptr<SocketRef> epoll_socket_ref_;
-    // Register this socket with the epoll-based event dispatcher
     void RegisterWithEpoll();
-    // Unregister this socket from the epoll-based event dispatcher
     void UnregisterFromEpoll();
     engine::TaskProcessor* registered_task_processor_{nullptr};
 #endif
