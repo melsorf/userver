@@ -191,8 +191,6 @@ void EpollEventDispatcher::ProcessEvents(
         if (IsShuttingDown()) break;
         if (processed_task) continue;
         
-        bool has_pending_events = false;
-        
         // Check for epoll events without blocking
         int nevents = epoll_wait(epoll_fd, events, kMaxEvents, 0);
         if (nevents > 0) {
