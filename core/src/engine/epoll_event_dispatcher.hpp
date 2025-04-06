@@ -127,10 +127,10 @@ private:
     void CleanupDeadOwners();
 
     /// @brief Check if an eventfd is ready for reading
-    bool CheckEventFdReady(int eventfd)
+    bool CheckEventFdReady(int eventfd);
 
     /// Number of worker threads
-    const size_t thread_count_;
+    const std::size_t thread_count_;
     
     /// Per-thread epoll file descriptors
     std::vector<int> thread_epoll_fds_;
