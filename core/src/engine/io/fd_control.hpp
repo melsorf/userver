@@ -123,6 +123,7 @@ private:
 
     void Reset(int fd, Kind kind) { 
         poller_.Reset(fd, kind);
+        kind_ = kind;
 #ifdef __linux__
         fd_ = fd;
         is_ready_.store(false, std::memory_order_relaxed);
@@ -140,6 +141,7 @@ private:
 
     FdPoller poller_;
 
+    Kind kind_{Kind::kRead};
 #ifdef __linux__
     std::atomic<bool> is_ready_{false};
     bool is_epoll_mode_{true};
