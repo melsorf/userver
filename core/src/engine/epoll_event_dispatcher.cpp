@@ -29,16 +29,6 @@ uint64_t NowNs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-void SetNonBlocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        throw std::system_error(errno, std::system_category(), "fcntl(F_GETFL) failed");
-    }
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        throw std::system_error(errno, std::system_category(), "fcntl(F_SETFL) failed");
-    }
-}
-
 // Read from an eventfd to clear the notification
 void ConsumeEvent(int eventfd) {
     uint64_t value;
@@ -243,7 +233,7 @@ void EpollEventDispatcher::WaitForEvents(
     thread_sleep_start_time_[thread_index].store(0, std::memory_order_relaxed);
     
     if (nevents < 0) {
-        HandleEpollError(nevents);
+        HandleEpollError();
         return;
     }
     
@@ -294,7 +284,7 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
     }
 }
 
-void EpollEventDispatcher::HandleEpollError(int error_code) {
+void EpollEventDispatcher::HandleEpollError() {
     if (errno == EINTR) {
         // Interrupted, just continue
         return;

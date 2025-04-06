@@ -109,7 +109,7 @@ private:
     void ProcessFdEvent(int fd, uint32_t events);
     
     /// @brief Handles epoll errors
-    void HandleEpollError(int error_code);
+    void HandleEpollError();
 
     /// @brief Create an epoll instance
     int CreateEpollInstance() const;
