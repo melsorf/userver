@@ -39,6 +39,9 @@ void ConsumeEvent(int eventfd) {
                 // No more data to read
                 break;
             }
+            if (errno == EINTR) {
+                continue;
+            }
             LOG_ERROR() << "Failed to read from eventfd: " << strerror(errno);
             break;
         }
@@ -55,9 +58,25 @@ void ConsumeEvent(int eventfd) {
 // Write to an eventfd to trigger notification
 void WriteEvent(int eventfd) {
     const uint64_t value = 1;
-    ssize_t res = write(eventfd, &value, sizeof(value));
-    if (res != sizeof(value)) {
-        LOG_ERROR() << "Failed to write to eventfd: " << strerror(errno);
+    while (true) {
+        ssize_t res = write(eventfd, &value, sizeof(value));
+        if (res == sizeof(value)) {
+            // Successfully wrote the value
+            break;
+        }
+        
+        if (res < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            
+            LOG_ERROR() << "Failed to write to eventfd: " << strerror(errno);
+            break;
+        }
     }
 }
 
@@ -178,19 +197,16 @@ void EpollEventDispatcher::ProcessEvents(
         int nevents = epoll_wait(epoll_fd, events, kMaxEvents, 0);
         if (nevents > 0) {
             ProcessEpollEvents(thread_index, events, nevents);
-            has_pending_events = true;
             continue;
         } else if (nevents < 0 && errno != EINTR) {
             HandleEpollError();
         }
         
         // If no events were detected, try spinning
-        if (!has_pending_events) {
-            bool spin_events = PerformSpinning(thread_index, events, epoll_fd);
-            if (spin_events) {
-                ProcessEpollEvents(thread_index, events, spin_nevents_);
-                continue;
-            }
+        bool spin_events = PerformSpinning(thread_index, events, epoll_fd);
+        if (spin_events) {
+            ProcessEpollEvents(thread_index, events, spin_nevents_);
+            continue;
         }
 
         // Last check before blocking wait
@@ -198,9 +214,16 @@ void EpollEventDispatcher::ProcessEvents(
             ConsumeEvent(thread_notify_fds_[thread_index]);
             continue;
         }
+        if (auto task_opt = queue.PopNonBlocking()) {
+            auto task_ptr = std::move(*task_opt);
+            if (task_ptr) {
+                ExecuteTask(task_ptr.get(), thread_index);
+                continue;
+            }
+        }
         if (IsShuttingDown()) break;
         
-        // No tasks or events, enter blocking wait
+        // Block for events
         WaitForEvents(thread_index, events, epoll_fd);
     }
 }
@@ -451,7 +474,7 @@ std::size_t EpollEventDispatcher::RegisterFd(
 
         epoll_event ev{};
         ev.events = events | EPOLLET;
-        ev.data.u64 = fd;
+        ev.data.u64 = static_cast<uint64_t>(fd);
 
         if (has_existing) {
             // Update existing callback
