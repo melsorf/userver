@@ -106,7 +106,7 @@ private:
     void ProcessEpollEvents(std::size_t thread_index, epoll_event* events, int nevents);
     
     /// @brief Processes a single file descriptor event
-    void ProcessFdEvent(int fd, uint32_t events);
+    void ProcessFdEvent(int fd, uint32_t events, size_t current_thread);
     
     /// @brief Handles epoll errors
     void HandleEpollError();
@@ -128,9 +128,6 @@ private:
 
     /// @brief Check if an eventfd is ready for reading
     bool CheckEventFdReady(int eventfd);
-
-    /// @brief Get the current thread index
-    size_t GetCurrentThreadIndex() const;
 
     /// Number of worker threads
     const std::size_t thread_count_;

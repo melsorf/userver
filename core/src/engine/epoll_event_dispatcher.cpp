@@ -343,11 +343,11 @@ void EpollEventDispatcher::ProcessEpollEvents(
         }
         
         // Regular fd event
-        ProcessFdEvent(static_cast<int>(event_data & kEventFdMask), event.events);
+        ProcessFdEvent(static_cast<int>(event_data & kEventFdMask), event.events, thread_index);
     }
 }
 
-void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
+void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events, size_t current_thread) {
     std::function<void(uint32_t)> callback;
     size_t owner_thread = std::numeric_limits<size_t>::max();
     bool forward_to_other_thread = false;
@@ -359,7 +359,6 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
         }
         
         // Check if the fd is owned by another thread
-        size_t current_thread = GetCurrentThreadIndex();
         if (it->second.owner_thread != current_thread && it->second.owner_thread < thread_count_) {
             owner_thread = it->second.owner_thread;
             forward_to_other_thread = true;
@@ -398,20 +397,6 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events) {
     } catch (...) {
         LOG_ERROR() << "Unknown exception in fd callback";
     }
-}
-
-std::size_t EpollEventDispatcher::GetCurrentThreadIndex() const {
-    thread_local size_t thread_index = std::numeric_limits<size_t>::max();
-    if (thread_index == std::numeric_limits<size_t>::max()) {
-        auto this_thread_id = std::this_thread::get_id();
-        for (size_t i = 0; i < worker_thread_ids_.size(); ++i) {
-            if (worker_thread_ids_[i] == this_thread_id) {
-                thread_index = i;
-                break;
-            }
-        }
-    }
-    return thread_index;
 }
 
 void EpollEventDispatcher::HandleEpollError() {
