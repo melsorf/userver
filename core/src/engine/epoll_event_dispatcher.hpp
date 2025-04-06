@@ -2,10 +2,12 @@
 
 #ifdef __linux__
 
+#include <cstring> 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <x86intrin.h>
 
 #include <atomic>
 #include <chrono>

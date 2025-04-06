@@ -134,9 +134,10 @@ void EpollEventDispatcher::ProcessEvents(
     
     while (!IsShuttingDown()) {
         // Check for tasks first
-        auto* task = queue.TryPop();
-        if (task) {
-            ExecuteTask(task, thread_index);
+        auto task_opt = queue.PopNonBlocking();
+        if (task_opt) {
+            auto task_ptr = std::move(*task_opt);
+            ExecuteTask(task_ptr.get(), thread_index);
             continue;
         }
         
@@ -148,9 +149,10 @@ void EpollEventDispatcher::ProcessEvents(
             ProcessEpollEvents(thread_index, events, spin_nevents_);
             
             // Check for tasks that might have been triggered by events
-            task = queue.TryPop();
-            if (task) {
-                ExecuteTask(task, thread_index);
+            task_opt = queue.PopNonBlocking();
+            if (task_opt) {
+                auto task_ptr = std::move(*task_opt);
+                ExecuteTask(task_ptr.get(), thread_index);
                 continue;
             }
         }
