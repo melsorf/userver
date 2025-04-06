@@ -93,7 +93,7 @@ option(USERVER_CONAN "Build with Conan packages" "${CONAN_EXPORTED}")
 option(
     USERVER_DOWNLOAD_PACKAGES
     "Download missing third party packages and use the downloaded versions"
-    OFF
+    ON
 )
 option(
     USERVER_FORCE_DOWNLOAD_PACKAGES
