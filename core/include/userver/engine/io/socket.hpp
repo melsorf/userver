@@ -204,7 +204,7 @@ private:
     struct SocketRef {
         int fd;
         impl::FdControl* fd_control;
-        engine::TaskProcessor* task_processor;
+        std::atomic<bool> is_valid{true};
     };
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
     std::shared_ptr<SocketRef> epoll_socket_ref_;

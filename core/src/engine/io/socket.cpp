@@ -545,19 +545,13 @@ void Socket::RegisterWithEpoll() {
         auto& task_processor = engine::current_task::GetTaskProcessor();
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
-
-        struct SocketRefImpl {
-            int fd;
-            impl::FdControl* fd_control;
-            std::atomic<bool> is_valid{true};
-        };
         
         // This shared_ptr will be kept alive as long as the callback exists
-        auto socket_ref = std::make_shared<SocketRefImpl>(
-            SocketRefImpl{socket_fd, fd_control_.get()});
+        auto socket_ref = std::make_shared<SocketRef>(
+            SocketRef{socket_fd, fd_control_.get()});
         
         // Weak_ptr in the callback to safely check if the socket still exists
-        auto weak_ref = std::weak_ptr<SocketRefImpl>(socket_ref);
+        auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
         
         constexpr uint32_t kSocketEvents = EPOLLIN | EPOLLOUT | EPOLLET;
         epoll_thread_id_ = task_processor.RegisterFd(
