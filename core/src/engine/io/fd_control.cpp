@@ -100,7 +100,7 @@ bool Direction::Wait(Deadline deadline) {
             constexpr auto kShortTimeout = std::chrono::milliseconds(10);
             
             while (remaining > std::chrono::milliseconds(0)) {
-                auto current_timeout = std::min(remaining, kShortTimeout);
+                auto current_timeout = std::min(remaining, std::chrono::duration_cast<std::chrono::steady_clock::duration>(kShortTimeout));
                 bool wait_result = poller_.Wait(Deadline::FromDuration(current_timeout)).has_value();
                 
                 if (wait_result) {
