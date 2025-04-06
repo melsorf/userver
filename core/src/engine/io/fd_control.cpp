@@ -69,62 +69,6 @@ bool Direction::Wait(Deadline deadline) {
     if (is_ready_.load(std::memory_order_acquire)) {
         return true;
     }
-
-    if (is_epoll_mode_ && fd_ >= 0) {
-        bool is_pipe = false;
-        struct stat st;
-        if (fstat(fd_, &st) == 0) {
-            is_pipe = S_ISFIFO(st.st_mode);
-        }
-
-        if (is_pipe) {
-            fd_set fds;
-            FD_ZERO(&fds);
-            FD_SET(fd_, &fds);
-            
-            struct timeval tv_zero{0, 0};
-            int select_res = 0;
-            
-            if (kind_ == Kind::kRead) {
-                select_res = select(fd_ + 1, &fds, nullptr, nullptr, &tv_zero);
-            } else {
-                select_res = select(fd_ + 1, nullptr, &fds, nullptr, &tv_zero);
-            }
-            
-            if (select_res > 0 && FD_ISSET(fd_, &fds)) {
-                is_ready_.store(true, std::memory_order_release);
-                return true;
-            }
-
-            auto remaining = deadline.TimeLeft();
-            constexpr auto kShortTimeout = std::chrono::milliseconds(10);
-            
-            while (remaining > std::chrono::milliseconds(0)) {
-                auto current_timeout = std::min(remaining, std::chrono::duration_cast<std::chrono::steady_clock::duration>(kShortTimeout));
-                bool wait_result = poller_.Wait(Deadline::FromDuration(current_timeout)).has_value();
-                
-                if (wait_result) {
-                    is_ready_.store(true, std::memory_order_release);
-                    return true;
-                }
-                
-                if (kind_ == Kind::kRead) {
-                    select_res = select(fd_ + 1, &fds, nullptr, nullptr, &tv_zero);
-                } else {
-                    select_res = select(fd_ + 1, nullptr, &fds, nullptr, &tv_zero);
-                }
-                
-                if (select_res > 0 && FD_ISSET(fd_, &fds)) {
-                    is_ready_.store(true, std::memory_order_release);
-                    return true;
-                }
-                
-                remaining = deadline.TimeLeft();
-            }
-            
-            return false;
-        }
-    }
 #endif
     
     bool result = poller_.Wait(deadline).has_value();
@@ -155,12 +99,6 @@ FdControlHolder FdControl::Adopt(int fd) {
     fd_control->read_.Reset(fd, Direction::Kind::kRead);
     fd_control->write_.Reset(fd, Direction::Kind::kWrite);
 
-    bool is_pipe = false;
-    struct stat st;
-    if (fstat(fd, &st) == 0) {
-        is_pipe = S_ISFIFO(st.st_mode);
-    }
-
     // Configure for epoll mode if available
     bool use_epoll = false;
     try {
@@ -173,26 +111,7 @@ FdControlHolder FdControl::Adopt(int fd) {
     fd_control->read_.SetEpollMode(use_epoll);
     fd_control->write_.SetEpollMode(use_epoll);
 
-    if (is_pipe && use_epoll) {
-        fd_set read_fds, write_fds;
-        FD_ZERO(&read_fds);
-        FD_ZERO(&write_fds);
-        FD_SET(fd, &read_fds);
-        FD_SET(fd, &write_fds);
-        
-        struct timeval tv_zero{0, 0};
-        select(fd + 1, &read_fds, &write_fds, nullptr, &tv_zero);
-        
-        if (FD_ISSET(fd, &read_fds)) {
-            fd_control->read_.NotifyReady();
-        }
-        
-        if (FD_ISSET(fd, &write_fds)) {
-            fd_control->write_.NotifyReady();
-        }
-    } else {
-        fd_control->write_.NotifyReady();
-    }
+    fd_control->write_.NotifyReady();
     
     return fd_control;
 }

@@ -208,7 +208,7 @@ private:
         std::atomic<bool> is_valid;
 
         SocketRef(int fd_param, impl::FdControl* control_param) 
-        : fd(fd_param), fd_control(control_param), is_valid(true) {}
+            : fd(fd_param), fd_control(control_param), is_valid(true) {}
         
         SocketRef(const SocketRef&) = delete;
         SocketRef& operator=(const SocketRef&) = delete;

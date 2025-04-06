@@ -46,7 +46,6 @@ void ConsumeEvent(int eventfd) {
             LOG_ERROR() << "Failed to read from eventfd: " << strerror(errno);
             break;
         }
-        
         if (res != sizeof(value)) {
             LOG_ERROR() << "Partial read from eventfd: expected " << sizeof(value) 
                         << " bytes, got " << res;
@@ -65,16 +64,13 @@ void WriteEvent(int eventfd) {
             // Successfully wrote the value
             break;
         }
-        
         if (res < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
-            
             LOG_ERROR() << "Failed to write to eventfd: " << strerror(errno);
             break;
         }
@@ -86,8 +82,7 @@ void WriteEvent(int eventfd) {
 EpollEventDispatcher::EpollEventDispatcher(size_t thread_count)
     : thread_count_(thread_count),
       thread_epoll_fds_(thread_count, -1),
-      thread_notify_fds_(thread_count, -1),
-      worker_thread_ids_(thread_count, std::thread::id()) {
+      thread_notify_fds_(thread_count, -1) {
 
     thread_spinning_ = std::make_unique<std::atomic<bool>[]>(thread_count_);
     thread_sleep_start_time_ = std::make_unique<std::atomic<uint64_t>[]>(thread_count_);
@@ -152,13 +147,6 @@ void EpollEventDispatcher::ProcessEvents(
     if (thread_index >= thread_count_) {
         LOG_ERROR() << "Invalid thread index: " << thread_index;
         return;
-    }
-
-    if (worker_thread_ids_.size() <= thread_index) {
-        if (worker_thread_ids_.size() < thread_count_) {
-            worker_thread_ids_.resize(thread_count_, std::thread::id());
-        }
-        worker_thread_ids_[thread_index] = std::this_thread::get_id();
     }
     
     // Get thread's epoll fd
@@ -371,36 +359,7 @@ void EpollEventDispatcher::ProcessEpollEvents(
             ConsumeEvent(thread_notify_fds_[thread_index]);
             continue;
         }
-        
         // Regular fd event
-        int fd = static_cast<int>(event_data & kEventFdMask);
-        
-        bool is_pipe = false;
-        struct stat st;
-        if (fstat(fd, &st) == 0) {
-            is_pipe = S_ISFIFO(st.st_mode);
-        }
-        
-        if (is_pipe) {
-            fd_set read_fds, write_fds;
-            FD_ZERO(&read_fds);
-            FD_ZERO(&write_fds);
-            FD_SET(fd, &read_fds);
-            FD_SET(fd, &write_fds);
-            
-            struct timeval tv_zero{0, 0};
-            select(fd + 1, &read_fds, &write_fds, nullptr, &tv_zero);
-            
-            uint32_t real_events = 0;
-            if (FD_ISSET(fd, &read_fds)) real_events |= EPOLLIN;
-            if (FD_ISSET(fd, &write_fds)) real_events |= EPOLLOUT;
-            
-            if (real_events) {
-                ProcessFdEvent(fd, real_events | (event.events & (EPOLLERR | EPOLLHUP)), 
-                               thread_index);
-                continue;
-            }
-        }
         ProcessFdEvent(static_cast<int>(event_data & kEventFdMask), event.events, thread_index);
     }
 }
@@ -442,12 +401,10 @@ void EpollEventDispatcher::ProcessFdEvent(int fd, uint32_t events, size_t curren
             expired = true;
         }
     }
-    
     if (expired) {
         UnregisterFd(fd);
         return;
     }
-    
     try {
         callback(events);
     } catch (const std::exception& ex) {
@@ -467,7 +424,6 @@ void EpollEventDispatcher::HandleEpollError() {
         return;
     }
     LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-    engine::SleepFor(std::chrono::milliseconds(10));
 }
 
 std::size_t EpollEventDispatcher::RegisterFd(
@@ -605,7 +561,6 @@ void EpollEventDispatcher::PostEvent() {
         LOG_WARNING() << "No thread available to post event";
         return;
     }
-    
     PostEvent(*thread_index_opt);
 }
 
@@ -680,13 +635,10 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
             }
         }
     }
-    
     if (found_sleeping) {
         return longest_sleeping_thread;
     }
-    
-    static std::atomic<std::size_t> next_thread{0};
-    return next_thread.fetch_add(1, std::memory_order_relaxed) % thread_count_;
+    return std::nullopt;
 }
 
 int EpollEventDispatcher::CreateEpollInstance() const {
@@ -703,40 +655,6 @@ int EpollEventDispatcher::CreateNotificationChannel() const {
         LOG_ERROR() << "Failed to create eventfd: " << strerror(errno);
     }
     return fd;
-}
-
-bool EpollEventDispatcher::AddToEpoll(
-    int epoll_fd, int fd, uint32_t events, uint64_t data) const {
-    
-    if (epoll_fd == -1 || fd == -1) {
-        return false;
-    }
-    
-    epoll_event ev{};
-    ev.events = events;
-    ev.data.u64 = data;
-    
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
-        LOG_ERROR() << "Failed to add fd " << fd << " to epoll: " 
-                    << strerror(errno);
-        return false;
-    }
-    
-    return true;
-}
-
-bool EpollEventDispatcher::RemoveFromEpoll(int epoll_fd, int fd) const {
-    if (epoll_fd == -1 || fd == -1) {
-        return false;
-    }
-    
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-        LOG_ERROR() << "Failed to remove fd " << fd << " from epoll: " 
-                    << strerror(errno);
-        return false;
-    }
-    
-    return true;
 }
 
 }  // namespace engine

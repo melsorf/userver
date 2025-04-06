@@ -117,12 +117,6 @@ private:
     /// @brief Create a notification channel (eventfd)
     int CreateNotificationChannel() const;
 
-    /// @brief Add a file descriptor to an epoll instance
-    bool AddToEpoll(int epoll_fd, int fd, uint32_t events, uint64_t data) const;
-
-    /// @brief Remove a file descriptor from an epoll instance
-    bool RemoveFromEpoll(int epoll_fd, int fd) const;
-
     /// @brief Periodically clean up dead owners from the registry
     void CleanupDeadOwners();
 
@@ -158,9 +152,6 @@ private:
     
     /// Map of file descriptors to their owners (for lifetime management)
     static inline std::unordered_map<int, std::weak_ptr<void>> fd_to_owner_;
-
-    /// thread_id for each worker thread
-    std::vector<std::thread::id> worker_thread_ids_;
 
     int spin_nevents_{0};
 };
