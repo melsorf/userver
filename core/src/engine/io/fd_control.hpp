@@ -73,20 +73,7 @@ public:
 
     int Fd() const noexcept { return poller_.GetFd(); }
 
-    [[nodiscard]] bool Wait(Deadline deadline) {
-#ifdef __linux__
-        if (is_ready_.load(std::memory_order_acquire)) {
-            return true;
-        }
-#endif
-        bool result = poller_.Wait(deadline).has_value();
-#ifdef __linux__
-        if (result) {
-            is_ready_.store(true, std::memory_order_release);
-        }
-#endif
-        return result;
-    }
+    [[nodiscard]] bool Wait(Deadline deadline);
 
     void ResetReady() noexcept { 
 #ifdef __linux__
@@ -134,7 +121,13 @@ private:
     friend class FdControl;
     explicit Direction(const ev::ThreadControl& control) : poller_(control) {}
 
-    void Reset(int fd, Kind kind) { poller_.Reset(fd, kind); }
+    void Reset(int fd, Kind kind) { 
+        poller_.Reset(fd, kind);
+#ifdef __linux__
+        fd_ = fd;
+        is_ready_.store(false, std::memory_order_relaxed);
+#endif
+    }
 
     void WakeupWaiters() { poller_.WakeupWaiters(); }
 
@@ -149,6 +142,8 @@ private:
 
 #ifdef __linux__
     std::atomic<bool> is_ready_{false};
+    bool is_epoll_mode_{true};
+    int fd_{-1};
 #endif
 };
 

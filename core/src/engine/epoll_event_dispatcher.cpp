@@ -11,6 +11,7 @@
 
 #include <engine/task/task_context.hpp>  
 #include <engine/task/task_counter.hpp>
+#include <engine/task/task_processor_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -372,6 +373,34 @@ void EpollEventDispatcher::ProcessEpollEvents(
         }
         
         // Regular fd event
+        int fd = static_cast<int>(event_data & kEventFdMask);
+        
+        bool is_pipe = false;
+        struct stat st;
+        if (fstat(fd, &st) == 0) {
+            is_pipe = S_ISFIFO(st.st_mode);
+        }
+        
+        if (is_pipe) {
+            fd_set read_fds, write_fds;
+            FD_ZERO(&read_fds);
+            FD_ZERO(&write_fds);
+            FD_SET(fd, &read_fds);
+            FD_SET(fd, &write_fds);
+            
+            struct timeval tv_zero{0, 0};
+            select(fd + 1, &read_fds, &write_fds, nullptr, &tv_zero);
+            
+            uint32_t real_events = 0;
+            if (FD_ISSET(fd, &read_fds)) real_events |= EPOLLIN;
+            if (FD_ISSET(fd, &write_fds)) real_events |= EPOLLOUT;
+            
+            if (real_events) {
+                ProcessFdEvent(fd, real_events | (event.events & (EPOLLERR | EPOLLHUP)), 
+                               thread_index);
+                continue;
+            }
+        }
         ProcessFdEvent(static_cast<int>(event_data & kEventFdMask), event.events, thread_index);
     }
 }

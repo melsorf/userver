@@ -561,12 +561,10 @@ void Socket::RegisterWithEpoll() {
             if (reg_result != std::numeric_limits<std::size_t>::max()) {
                 epoll_thread_id_ = reg_result;
                 epoll_socket_ref_ = std::move(socket_ref);
-                return;
             }
     } catch (const std::exception& ex) {
         LOG_WARNING() << "Failed to register socket with epoll: " << ex.what();
         epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
-        registered_task_processor_ = nullptr;
         epoll_socket_ref_.reset();
     }
 }
