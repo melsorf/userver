@@ -9,6 +9,9 @@
 #include <userver/engine/sleep.hpp>
 #include <userver/utils/assert.hpp>
 
+#include <engine/task/task_context.hpp>  
+#include <engine/task/task_counter.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {
@@ -121,6 +124,8 @@ void EpollEventDispatcher::ProcessEvents(
     std::shared_ptr<impl::TaskProcessorPools> pools) {
     
     UASSERT(thread_index < thread_count_);
+
+    (void)pools;
     
     // Get thread's epoll fd
     int epoll_fd = thread_epoll_fds_[thread_index];
