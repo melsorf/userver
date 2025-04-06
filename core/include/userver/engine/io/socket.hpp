@@ -207,11 +207,13 @@ private:
         impl::FdControl* fd_control;
         std::atomic<bool> is_valid;
 
-        SocketRef(int fd, impl::FdControl* fd_control) 
-            : fd(fd), fd_control(fd_control), is_valid(true) {}
+        SocketRef(int fd_param, impl::FdControl* control_param) 
+        : fd(fd_param), fd_control(control_param), is_valid(true) {}
         
         SocketRef(const SocketRef&) = delete;
         SocketRef& operator=(const SocketRef&) = delete;
+        SocketRef(SocketRef&&) = delete;
+        SocketRef& operator=(SocketRef&&) = delete;
     };
     std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
     std::shared_ptr<SocketRef> epoll_socket_ref_;

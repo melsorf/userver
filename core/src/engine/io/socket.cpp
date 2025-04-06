@@ -523,22 +523,24 @@ void Socket::RegisterWithEpoll() {
     
     try {
         auto& task_processor = engine::current_task::GetTaskProcessor();
+        if (!task_processor.IsEpollModeEnabled()) {
+            LOG_DEBUG() << "Epoll mode not enabled for current task processor, skipping";
+            return;
+        }
         registered_task_processor_ = &task_processor;
         int socket_fd = Fd();
         
         // This shared_ptr will be kept alive as long as the callback exists
         auto socket_ref = std::make_shared<SocketRef>(socket_fd, fd_control_.get());
-        
         // Weak_ptr in the callback to safely check if the socket still exists
         auto weak_ref = std::weak_ptr<SocketRef>(socket_ref);
         
         constexpr uint32_t kSocketEvents = EPOLLIN | EPOLLOUT | EPOLLET;
-        epoll_thread_id_ = task_processor.RegisterFd(
-            socket_fd,
-            kSocketEvents,
+        std::size_t reg_result = task_processor.RegisterFd(
+            socket_fd, kSocketEvents,
             [weak_ref](uint32_t events) {
                 if (auto ref = weak_ref.lock()) {
-                    if (!ref->is_valid) return;
+                    if (!ref->is_valid.load(std::memory_order_acquire)) return;
                     
                     auto* fd_control = ref->fd_control;
                     if (!fd_control) return;
@@ -556,7 +558,11 @@ void Socket::RegisterWithEpoll() {
                 }
             }, weak_ref);
             
-        epoll_socket_ref_ = std::move(socket_ref);
+            if (reg_result != std::numeric_limits<std::size_t>::max()) {
+                epoll_thread_id_ = reg_result;
+                epoll_socket_ref_ = std::move(socket_ref);
+                return;
+            }
     } catch (const std::exception& ex) {
         LOG_WARNING() << "Failed to register socket with epoll: " << ex.what();
         epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
@@ -566,22 +572,21 @@ void Socket::RegisterWithEpoll() {
 }
 
 void Socket::UnregisterFromEpoll() {
-    std::size_t thread_id = std::numeric_limits<std::size_t>::max();
-    engine::TaskProcessor* processor = nullptr;
+    std::size_t thread_id = epoll_thread_id_;
+    engine::TaskProcessor* processor = registered_task_processor_;
     int socket_fd = -1;
+    std::shared_ptr<SocketRef> socket_ref;
     
     // First, mark as invalid and get data needed for unregistration
-    if (epoll_socket_ref_) {
-        epoll_socket_ref_->is_valid.store(false, std::memory_order_release);
-        socket_fd = epoll_socket_ref_->fd;
+    {
+        if (epoll_socket_ref_) {
+            epoll_socket_ref_->is_valid.store(false, std::memory_order_release);
+            socket_fd = epoll_socket_ref_->fd;
+            socket_ref = std::move(epoll_socket_ref_);
+        }
+        epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+        registered_task_processor_ = nullptr;
     }
-
-    thread_id = epoll_thread_id_;
-    processor = registered_task_processor_;
-
-    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
-    registered_task_processor_ = nullptr;
-    epoll_socket_ref_.reset();
 
     if (thread_id != std::numeric_limits<std::size_t>::max() && processor && socket_fd >= 0) {
         try {
@@ -590,6 +595,7 @@ void Socket::UnregisterFromEpoll() {
             LOG_WARNING() << "Exception while unregistering socket from epoll: " << ex.what();
         }
     }
+    socket_ref.reset();
 }
 #endif
 

@@ -123,6 +123,9 @@ private:
     /// @brief Remove a file descriptor from an epoll instance
     bool RemoveFromEpoll(int epoll_fd, int fd) const;
 
+    /// @brief Periodically clean up dead owners from the registry
+    void CleanupDeadOwners();
+
     /// Number of worker threads
     const size_t thread_count_;
     

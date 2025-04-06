@@ -113,7 +113,10 @@ void EpollEventDispatcher::ProcessEvents(
     TaskQueue& queue, 
     std::shared_ptr<impl::TaskProcessorPools> pools) {
     
-    UASSERT(thread_index < thread_count_);
+    if (thread_index >= thread_count_) {
+        LOG_ERROR() << "Invalid thread index: " << thread_index;
+        return;
+    }
 
     (void)pools;
     
@@ -124,10 +127,17 @@ void EpollEventDispatcher::ProcessEvents(
         return;
     }
 
+    thread_local int cleanup_counter = 0;
+    constexpr int kCleanupInterval = 500;
+
     // Event buffer for epoll_wait
     epoll_event events[kMaxEvents];
     
     while (!IsShuttingDown()) {
+        if (++cleanup_counter >= kCleanupInterval) {
+            cleanup_counter = 0;
+            CleanupDeadOwners();
+        }
         // Check for tasks first
         auto task_opt = queue.PopNonBlocking();
         if (task_opt) {
@@ -154,6 +164,33 @@ void EpollEventDispatcher::ProcessEvents(
         
         // No tasks or events, enter blocking wait
         WaitForEvents(thread_index, events, epoll_fd);
+    }
+}
+
+void EpollEventDispatcher::CleanupDeadOwners() {
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    
+    for (auto it = fd_to_owner_.begin(); it != fd_to_owner_.end();) {
+        if (it->second.expired()) {
+            int fd = it->first;
+            it = fd_to_owner_.erase(it);
+            
+            // Try to remove callback
+            std::lock_guard<std::mutex> lock_cb(fd_mutex_);
+            auto cb_it = fd_callbacks_.find(fd);
+            if (cb_it != fd_callbacks_.end()) {
+                size_t thread_idx = cb_it->second.owner_thread;
+                if (thread_idx < thread_count_) {
+                    int epoll_fd = thread_epoll_fds_[thread_idx];
+                    if (epoll_fd != -1) {
+                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                    }
+                }
+                fd_callbacks_.erase(cb_it);
+            }
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -476,10 +513,13 @@ EpollEventDispatcher::ThreadState EpollEventDispatcher::GetThreadState(
 }
 
 std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
+    if (thread_count_ == 0) {
+        return std::nullopt;
+    }
     // First, look for spinning threads
     for (size_t i = 0; i < thread_count_; ++i) {
-        if (GetThreadState(i) == ThreadState::kSpinning) {
-            return i; // Found a spinning thread
+        if (thread_spinning_[i].load(std::memory_order_relaxed)) {
+            return i;
         }
     }
     
