@@ -144,7 +144,6 @@ private:
     Kind kind_{Kind::kRead};
 #ifdef __linux__
     std::atomic<bool> is_ready_{false};
-    bool is_epoll_mode_{true};
     int fd_{-1};
 #endif
 };
