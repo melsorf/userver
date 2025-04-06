@@ -126,8 +126,8 @@ private:
     /// @brief Periodically clean up dead owners from the registry
     void CleanupDeadOwners();
 
-    /// @brief Check if there are any active descriptors for the current thread
-    bool CheckActiveDescriptors(std::size_t thread_index)
+    /// @brief Check if an eventfd is ready for reading
+    bool CheckEventFdReady(int eventfd)
 
     /// Number of worker threads
     const size_t thread_count_;

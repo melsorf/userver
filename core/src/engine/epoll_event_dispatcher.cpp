@@ -191,8 +191,9 @@ void EpollEventDispatcher::ProcessEvents(
             continue;
         }
 
-        bool has_active_descriptors = CheckActiveDescriptors(thread_index);
-        if (has_active_descriptors) {
+        // Last check before blocking wait
+        if (CheckEventFdReady(thread_notify_fds_[thread_index])) {
+            ConsumeEvent(thread_notify_fds_[thread_index]);
             continue;
         }
         if (IsShuttingDown()) break;
@@ -202,54 +203,17 @@ void EpollEventDispatcher::ProcessEvents(
     }
 }
 
-bool EpollEventDispatcher::CheckActiveDescriptors(std::size_t thread_index) {
-    std::vector<int> fds_to_check;
+bool EpollEventDispatcher::CheckEventFdReady(int eventfd) {
+    if (eventfd < 0) return false;
     
-    // Get the list of file descriptors
-    {
-        std::lock_guard<std::mutex> lock(fd_mutex_);
-        for (const auto& [fd, info] : fd_callbacks_) {
-            if (info.owner_thread == thread_index) {
-                fds_to_check.push_back(fd);
-            }
-        }
-    }
+    fd_set read_set;
+    FD_ZERO(&read_set);
+    FD_SET(eventfd, &read_set);
     
-    // Check each file descriptor for activity
-    for (int fd : fds_to_check) {
-        if (fd == -1) continue;
-        
-        // Check for data
-        fd_set read_set;
-        FD_ZERO(&read_set);
-        FD_SET(fd, &read_set);
-        
-        fd_set write_set;
-        FD_ZERO(&write_set);
-        FD_SET(fd, &write_set);
-        
-        fd_set error_set;
-        FD_ZERO(&error_set);
-        FD_SET(fd, &error_set);
-        
-        struct timeval timeout{0, 0};
-        
-        int result = select(fd + 1, &read_set, &write_set, &error_set, &timeout);
-        if (result > 0) {
-            // Check which events occurred
-            uint32_t events = 0;
-            if (FD_ISSET(fd, &read_set)) events |= EPOLLIN;
-            if (FD_ISSET(fd, &write_set)) events |= EPOLLOUT;
-            if (FD_ISSET(fd, &error_set)) events |= EPOLLERR;
-            
-            if (events) {
-                ProcessFdEvent(fd, events);
-                return true; // Found an active descriptor
-            }
-        }
-    }
+    struct timeval timeout{0, 0};
+    int result = select(eventfd + 1, &read_set, nullptr, nullptr, &timeout);
     
-    return false; // No active descriptors found
+    return (result > 0 && FD_ISSET(eventfd, &read_set));
 }
 
 void EpollEventDispatcher::CleanupDeadOwners() {
@@ -308,7 +272,7 @@ bool EpollEventDispatcher::PerformSpinning(
     thread_spinning_[thread_index].store(true, std::memory_order_relaxed);
     
     // Spin - check for events during spinning
-    bool has_events = false;
+    bool has_spin_events = false;
     spin_nevents_ = 0;
     auto now = spin_start;
     
@@ -321,7 +285,7 @@ bool EpollEventDispatcher::PerformSpinning(
         }
 
         if (spin_nevents_ > 0) {
-            has_events = true;
+            has_spin_events = true;
             break;
         } else if (spin_nevents_ < 0 && errno != EINTR) {
             LOG_ERROR() << "epoll_wait failed during spin: " << strerror(errno);
@@ -333,7 +297,7 @@ bool EpollEventDispatcher::PerformSpinning(
     }
 
     thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
-    return has_events;
+    return has_spin_events;
 }
 
 void EpollEventDispatcher::WaitForEvents(
