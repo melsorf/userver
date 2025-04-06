@@ -184,7 +184,7 @@ void EpollEventDispatcher::ProcessEvents(
         if (++stack_monitor_counter >= kStackMonitorInterval) {
             stack_monitor_counter = 0;
             if (pools) {
-                pools->GetCoroPool()->AccountStackUsage();
+                pools->GetCoroPool().AccountStackUsage();
             }
         }
         // Check for tasks first
