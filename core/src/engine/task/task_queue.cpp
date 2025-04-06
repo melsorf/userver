@@ -52,34 +52,8 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopBlocking() {
     // Current thread handles only a single TaskProcessor, so it's safe to store
     // a token for the task processor in a thread-local variable.
     thread_local moodycamel::ConsumerToken token(queue_);
-
-#ifdef __linux__
-    // In epoll mode, PopBlocking should never be called
-    if (notify_fd_ != -1) {
-        LOG_ERROR() << "TaskQueue::PopBlocking() called in epoll mode - this is wrong!";
-        UASSERT_MSG(false, "TaskQueue::PopBlocking() called in epoll mode");
-        
-        // Return some value
-        impl::TaskContext* raw_context = nullptr;
-        while (!queue_.try_dequeue(token, raw_context)) {
-            std::this_thread::yield();
-        }
-        
-        boost::intrusive_ptr<impl::TaskContext> context{
-            raw_context, /* add_ref= */ false};
-            
-        if (!context) {
-            // return "stop" token back
-            DoPush(nullptr);
-        }
-        
-        return context;
-    }
-#endif
-    // Semaphore-based blocking approach - only used in non-epoll mode
-    impl::TaskContext* raw_context = DoPopBlocking(token);
     boost::intrusive_ptr<impl::TaskContext> context{
-        raw_context, /* add_ref= */ false};
+        DoPopBlocking(token), /* add_ref= */ false};
 
     if (!context) {
         // return "stop" token back

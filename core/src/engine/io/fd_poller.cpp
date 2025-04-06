@@ -229,18 +229,28 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-    const auto current_state = state_.load(std::memory_order_acquire);
-    if (current_state == FdPoller::State::kInvalid) {
+#ifdef __linux__
+    if (use_epoll_) {
+        const auto current_state = state_.load(std::memory_order_acquire);
+        if (current_state == FdPoller::State::kInvalid) return;
+        
+        UASSERT(current_state == FdPoller::State::kReadyToUse);
+        UnregisterFromEpoll(false);
+        StopWatcher();
+        state_.store(FdPoller::State::kInvalid, std::memory_order_release);
         return;
     }
-    UASSERT(current_state == FdPoller::State::kReadyToUse);
-
-#ifdef __linux__
-    UnregisterFromEpoll(false);
 #endif
-
     StopWatcher();
-    state_.store(FdPoller::State::kInvalid, std::memory_order_release);
+    
+    auto old_state = State::kReadyToUse;
+    const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
+    
+    UINVARIANT(
+        res,
+        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", 
+                    State::kReadyToUse, old_state)
+    );
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
