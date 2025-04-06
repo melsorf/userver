@@ -126,6 +126,9 @@ private:
     /// @brief Periodically clean up dead owners from the registry
     void CleanupDeadOwners();
 
+    /// @brief Check if there are any active descriptors for the current thread
+    bool CheckActiveDescriptors(std::size_t thread_index)
+
     /// Number of worker threads
     const size_t thread_count_;
     
@@ -136,10 +139,10 @@ private:
     std::vector<int> thread_notify_fds_;
     
     /// Thread spinning state (actively processing vs waiting)
-    std::vector<std::atomic<bool>> thread_spinning_;
+    std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
     
     /// Thread sleep start time (for fair load balancing)
-    std::vector<std::atomic<uint64_t>> thread_sleep_start_time_;
+    std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
     
     /// Mutex for file descriptor operations
     std::mutex fd_mutex_;
