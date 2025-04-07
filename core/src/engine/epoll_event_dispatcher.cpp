@@ -639,8 +639,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
         return longest_sleeping_thread;
     }
     
-    static std::atomic<std::size_t> next_thread{0};
-    return next_thread.fetch_add(1, std::memory_order_relaxed) % thread_count_;
+    return std::nullopt;
 }
 
 int EpollEventDispatcher::CreateEpollInstance() const {
