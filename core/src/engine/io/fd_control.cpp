@@ -64,6 +64,24 @@ Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReady
 // the same ThreadControl for the sake of better balancing of ev threads.
 FdControl::FdControl(const ev::ThreadControl& control) : read_(control), write_(control) {}
 
+bool Direction::Wait(Deadline deadline) {
+#ifdef __linux__
+    if (is_ready_.load(std::memory_order_acquire)) {
+        return true;
+    }
+#endif
+    
+    bool result = poller_.Wait(deadline).has_value();
+
+#ifdef __linux__
+    if (result) {
+        is_ready_.store(true, std::memory_order_release);
+    }
+#endif
+
+    return result;
+}
+
 FdControl::~FdControl() {
     try {
         Close();

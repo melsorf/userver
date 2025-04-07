@@ -37,7 +37,9 @@ Pipe::Pipe() {
     writer = PipeWriter(pipefd[1]);
     write_guard.Release();
 
-    writer.fd_control_->Write().NotifyReady();
+    if (writer.fd_control_) {
+        writer.fd_control_->Write().NotifyReady();
+    }
 }
 
 PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {

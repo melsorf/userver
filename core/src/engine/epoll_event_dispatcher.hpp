@@ -106,7 +106,7 @@ private:
     void ProcessEpollEvents(std::size_t thread_index, epoll_event* events, int nevents);
     
     /// @brief Processes a single file descriptor event
-    void ProcessFdEvent(int fd, uint32_t events);
+    void ProcessFdEvent(int fd, uint32_t events, size_t current_thread);
     
     /// @brief Handles epoll errors
     void HandleEpollError();
@@ -117,14 +117,14 @@ private:
     /// @brief Create a notification channel (eventfd)
     int CreateNotificationChannel() const;
 
-    /// @brief Add a file descriptor to an epoll instance
-    bool AddToEpoll(int epoll_fd, int fd, uint32_t events, uint64_t data) const;
+    /// @brief Periodically clean up dead owners from the registry
+    void CleanupDeadOwners();
 
-    /// @brief Remove a file descriptor from an epoll instance
-    bool RemoveFromEpoll(int epoll_fd, int fd) const;
+    /// @brief Check if an eventfd is ready for reading
+    bool CheckEventFdReady(int eventfd);
 
     /// Number of worker threads
-    const size_t thread_count_;
+    const std::size_t thread_count_;
     
     /// Per-thread epoll file descriptors
     std::vector<int> thread_epoll_fds_;
@@ -133,10 +133,10 @@ private:
     std::vector<int> thread_notify_fds_;
     
     /// Thread spinning state (actively processing vs waiting)
-    std::vector<std::atomic<bool>> thread_spinning_;
+    std::unique_ptr<std::atomic<bool>[]> thread_spinning_;
     
     /// Thread sleep start time (for fair load balancing)
-    std::vector<std::atomic<uint64_t>> thread_sleep_start_time_;
+    std::unique_ptr<std::atomic<uint64_t>[]> thread_sleep_start_time_;
     
     /// Mutex for file descriptor operations
     std::mutex fd_mutex_;

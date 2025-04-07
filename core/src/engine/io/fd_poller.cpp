@@ -128,11 +128,13 @@ struct FdPoller::Impl final
     void SetupWatcher(int fd, Kind kind);
 
 #ifdef __linux__
-    void TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet);
+    bool TryRegisterWithEpoll(int fd, Kind kind, bool register_epollet);
 
     void CleanupPreviousEpollRegistration();
 
-    void TryGetCurrentTaskProcessor();
+    engine::TaskProcessor* TryGetCurrentTaskProcessor();
+
+    void UnregisterFromEpoll(bool is_destructor);
 #endif
 
     // ContextAccessor implementation
@@ -200,25 +202,7 @@ FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watc
 
 FdPoller::Impl::~Impl() {
 #ifdef __linux__
-    int fd_to_unregister = -1;
-    engine::TaskProcessor* processor = nullptr;
-    
-    {
-        std::lock_guard<std::mutex> lock(epoll_mutex_);
-        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
-            fd_to_unregister = fd_;
-            processor = task_processor_;
-            registered_fd_index_.reset();
-        }
-    }
-    
-    if (fd_to_unregister >= 0 && processor) {
-        try {
-            processor->UnregisterFd(fd_to_unregister);
-        } catch (...) {
-            // Destructors shouldn't throw
-        }
-    }
+    UnregisterFromEpoll(true);
 #endif
 }
 
@@ -245,37 +229,28 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
 }
 
 void FdPoller::Impl::Invalidate() {
-    const auto current_state = state_.load(std::memory_order_acquire);
-    if (current_state == FdPoller::State::kInvalid) {
+#ifdef __linux__
+    if (use_epoll_) {
+        const auto current_state = state_.load(std::memory_order_acquire);
+        if (current_state == FdPoller::State::kInvalid) return;
+        
+        UASSERT(current_state == FdPoller::State::kReadyToUse);
+        UnregisterFromEpoll(false);
+        StopWatcher();
+        state_.store(FdPoller::State::kInvalid, std::memory_order_release);
         return;
     }
-    UASSERT(current_state == FdPoller::State::kReadyToUse);
-
-#ifdef __linux__
-    int fd_to_unregister = -1;
-    engine::TaskProcessor* processor = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(epoll_mutex_);
-        if (use_epoll_ && fd_ >= 0 &&task_processor_ && registered_fd_index_) {
-            fd_to_unregister = fd_;
-            processor = task_processor_;
-        }
-        registered_fd_index_.reset();
-        fd_ = -1;
-        use_epoll_ = false;
-        task_processor_ = nullptr;
-    }
-    if (fd_to_unregister >= 0 && processor) {
-        try {
-            processor->UnregisterFd(fd_to_unregister);
-        } catch (...) {
-            LOG_ERROR() << "Failed to unregister fd " << fd_to_unregister << " from epoll";
-        }
-    }
 #endif
-
     StopWatcher();
-    state_.store(FdPoller::State::kInvalid, std::memory_order_release);
+    
+    auto old_state = State::kReadyToUse;
+    const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
+    
+    UINVARIANT(
+        res,
+        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", 
+                    State::kReadyToUse, old_state)
+    );
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
@@ -451,6 +426,36 @@ void FdPoller::Impl::CleanupPreviousEpollRegistration() {
         }
         registered_fd_index_.reset();
         task_processor_ = nullptr;
+    }
+}
+
+void FdPoller::Impl::UnregisterFromEpoll(bool is_destructor) {
+    int fd_to_unregister = -1;
+    engine::TaskProcessor* processor = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(epoll_mutex_);
+        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
+            fd_to_unregister = fd_;
+            processor = task_processor_;
+        }
+        
+        if (!is_destructor) {
+            fd_ = -1;
+            use_epoll_ = false;
+            task_processor_ = nullptr;
+        }
+        
+        registered_fd_index_.reset();
+    }
+    
+    if (fd_to_unregister >= 0 && processor) {
+        try {
+            processor->UnregisterFd(fd_to_unregister);
+        } catch (...) {
+            if (!is_destructor) {
+                LOG_ERROR() << "Failed to unregister fd " << fd_to_unregister << " from epoll";
+            }
+        }
     }
 }
 #endif
