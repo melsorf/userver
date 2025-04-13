@@ -26,7 +26,7 @@ TaskQueueType Parse(const yaml_config::YamlConfig& value, formats::parse::To<Tas
 
 struct TaskProcessorConfig {
     std::string name;
-
+    
     bool should_guess_cpu_limit{false};
     std::size_t worker_threads{6};
     std::string thread_name;
@@ -37,6 +37,9 @@ struct TaskProcessorConfig {
     std::size_t task_trace_every{1000};
     std::size_t task_trace_max_csw{0};
     std::string task_trace_logger_name;
+
+    /// @brief Use epoll for I/O events directly in worker threads instead of separate ev_threads (Linux only, requires TaskQueue scheduler)
+    bool use_per_thread_epoll{true};
 
     void SetName(const std::string& new_name);
 };

@@ -11,12 +11,23 @@ constexpr std::size_t kSemaphoreInitialCount = 0;
 }
 
 TaskQueue::TaskQueue(const TaskProcessorConfig& config)
-    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations) {}
+    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations),
+    eventfd_{}
+{}
 
 void TaskQueue::Push(boost::intrusive_ptr<impl::TaskContext>&& context) {
     UASSERT(context);
     DoPush(context.get());
     context.detach();
+}
+
+boost::intrusive_ptr<impl::TaskContext> TaskQueue::TryPop() {
+    thread_local moodycamel::ConsumerToken token(queue_);
+    impl::TaskContext* context_ptr = nullptr;
+    if (DoTryPop(token, context_ptr)) {
+        return boost::intrusive_ptr<impl::TaskContext>{context_ptr, /* add_ref= */ false};
+    }
+    return nullptr;
 }
 
 boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopBlocking() {
@@ -40,6 +51,18 @@ void TaskQueue::StopProcessing() { DoPush(nullptr); }
 
 std::size_t TaskQueue::GetSizeApproximate() const noexcept { return queue_.size_approx(); }
 
+int TaskQueue::GetEventFd() const noexcept {
+    return eventfd_.GetFd();
+}
+
+bool TaskQueue::DoTryPop(moodycamel::ConsumerToken& token, impl::TaskContext*& context) {
+    return queue_.try_dequeue(token, context);
+}
+
+bool TaskQueue::IsStopToken(impl::TaskContext* context) {
+    return context == nullptr;
+}
+
 void TaskQueue::PrepareWorker(std::size_t) {}
 
 void TaskQueue::DoPush(impl::TaskContext* context) {
@@ -47,6 +70,8 @@ void TaskQueue::DoPush(impl::TaskContext* context) {
     // moodycamel::BlockingConcurrentQueue::enqueue
     queue_.enqueue(context);
     queue_semaphore_.signal();
+    [[maybe_unused]] auto result = engine::io::util::WriteToEventFd(eventfd_, 1);
+    // TODO: Handle potential error from WriteToEventFd? For now, assume it works
 }
 
 impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {
@@ -58,6 +83,14 @@ impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {
     while (!queue_.try_dequeue(token, context)) {
         // Can happen when another consumer steals our item in exchange for another
         // item in a Moodycamel sub-queue that we have already passed.
+    }
+
+    // If we popped an item, we need to consume the corresponding eventfd signal
+    // This is slightly racy but helps keep the eventfd count roughly correct.
+    // The epoll loop handles the definitive draining
+    if (context) {
+        uint64_t counter;
+        [[maybe_unused]] auto res = engine::io::util::TryReadFromEventFd(eventfd_, counter);
     }
 
     return context;
