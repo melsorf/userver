@@ -56,7 +56,7 @@ struct EventFd::Impl {
             const auto error_code = errno;
             throw IoSystemError(error_code, "Cannot create eventfd");
         }
-        LOG_DEBUG() << "Created eventfd: " << fd << " with flags=" << flags.Value();
+        LOG_DEBUG() << "Created eventfd: " << fd << " with flags=" << flags.GetValue();
 #else
         // Fallback using pipe
         if (initial_value != 0) {
@@ -77,7 +77,7 @@ struct EventFd::Impl {
         }
         fd = pipe_fds[0];       // Read end for polling
         write_fd = pipe_fds[1]; // Write end for signaling
-        LOG_DEBUG() << "Created pipe for eventfd fallback: read_fd=" << fd << ", write_fd=" << write_fd << " with flags=" << flags.Value();
+        LOG_DEBUG() << "Created pipe for eventfd fallback: read_fd=" << fd << ", write_fd=" << write_fd << " with flags=" << flags.GetValue();
 #endif
     }
 
