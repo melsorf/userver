@@ -309,7 +309,7 @@ bool FdPoller::Impl::IsValid() const noexcept {
     return state_.load(std::memory_order_relaxed) != State::kInvalid;
 }
 
-FdPoller::FdPoller(const ev::ThreadControl& control) : pimpl_(control) {
+FdPoller::FdPoller(ev::ThreadControl& control) : pimpl_(control) {
     static_assert(std::atomic<State>::is_always_lock_free);
 }
 

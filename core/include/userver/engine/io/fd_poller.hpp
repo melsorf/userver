@@ -55,7 +55,7 @@ public:
     ///
     /// It is recommended to place read and write FdPoller's of the same FD to
     /// the same `control` for better ev threads balancing.
-    explicit FdPoller(const ev::ThreadControl& control);
+    explicit FdPoller(ev::ThreadControl& control);
 
     FdPoller(const FdPoller&) = delete;
     FdPoller(FdPoller&&) = delete;
