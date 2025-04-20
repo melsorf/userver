@@ -3,6 +3,7 @@
 #include <engine/task/task_context.hpp>
 #include <userver/engine/io/exception.hpp>
 #include <userver/utils/assert.hpp>
+#include <cstdint>
 #include <userver/logging/log.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -80,25 +81,15 @@ void TaskQueue::DoPush(impl::TaskContext* context) {
 }
 
 impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {
-    impl::TaskContext* context{};
-
-    // This piece of code is copy-pasted from
-    // moodycamel::BlockingConcurrentQueue::wait_dequeue
-    queue_semaphore_.wait();
-    while (!queue_.try_dequeue(token, context)) {
-        // Can happen when another consumer steals our item in exchange for another
-        // item in a Moodycamel sub-queue that we have already passed.
+    impl::TaskContext* context_ptr = nullptr;
+    while (!DoTryPop(token, context_ptr)) {
+        queue_semaphore_.wait();
+        // Drain eventfd after semaphore wait to avoid redundant wakeups
+        uint64_t counter = 0;
+        [[maybe_unused]] bool read_success = eventfd_.TryRead(counter);
+        // We don't strictly need the result, just draining it is enough
     }
-
-    // If we popped an item, we need to consume the corresponding eventfd signal
-    // This is slightly racy but helps keep the eventfd count roughly correct.
-    // The epoll loop handles the definitive draining
-    if (context) {
-        uint64_t counter;
-        [[maybe_unused]] auto res = engine::io::util::TryReadFromEventFd(eventfd_, counter);
-    }
-
-    return context;
+    return context_ptr;
 }
 
 }  // namespace engine

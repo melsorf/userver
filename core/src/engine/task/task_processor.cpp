@@ -125,14 +125,14 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
       task_counter_(config.worker_threads),
       config_(std::move(config)),
       pools_(std::move(pools))
+{
 #ifdef __linux__
-      // Only allocate epoll data if the feature is enabled and we are using TaskQueue
-      , per_thread_epoll_data_(
-            (config_.use_per_thread_epoll && std::holds_alternative<TaskQueue>(task_queue_))
-            ? config_.worker_threads : 0)
-#endif
+    // Only allocate epoll data if the feature is enabled and we are using TaskQueue
+    per_thread_epoll_data_.resize(
+        (config_.use_per_thread_epoll && std::holds_alternative<TaskQueue>(task_queue_))
+        ? config_.worker_threads : 0);
+
     // Ensure epoll is only attempted with TaskQueue
-#ifdef __linux__
     if (config_.use_per_thread_epoll && !std::holds_alternative<TaskQueue>(task_queue_)) {
         throw std::logic_error(fmt::format(
             "TaskProcessor '{}': use_per_thread_epoll=true is only supported with TaskQueueType::kGlobalTaskQueue",
