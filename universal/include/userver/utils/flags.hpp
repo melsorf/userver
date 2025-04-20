@@ -375,4 +375,16 @@ bool operator!=(Enum lhs, const AtomicFlags<Enum>& rhs) {
 
 }  // namespace utils
 
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define USERVER_DECLARE_FLAGS_OPERATORS(Enum)                                  \
+  [[maybe_unused]] constexpr USERVER_NAMESPACE::utils::Flags<Enum> operator|( \
+      Enum lhs, Enum rhs) noexcept {                                           \
+    return USERVER_NAMESPACE::utils::Flags<Enum>(lhs) | rhs;                   \
+  }                                                                            \
+  [[maybe_unused]] constexpr USERVER_NAMESPACE::utils::Flags<Enum> operator&( \
+      Enum lhs, Enum rhs) noexcept {                                           \
+    return USERVER_NAMESPACE::utils::Flags<Enum>(lhs) & rhs;                   \
+  }
+
+
 USERVER_NAMESPACE_END
