@@ -23,6 +23,13 @@ namespace engine::ev {
 class ThreadControl;
 }
 
+namespace engine {
+class TaskProcessor;
+#ifdef __linux__
+struct EpollCallbackDataBase;
+#endif
+} // namespace engine
+
 namespace engine::io {
 
 namespace impl {
@@ -101,10 +108,12 @@ private:
         kInUse,  /// < used only in debug to detect invalid concurrent usage
     };
 
-    void WakeupWaiters();
-
     struct Impl;
-    utils::FastPimpl<Impl, 128, 16> pimpl_;
+    utils::FastPimpl<Impl, 192, 16> pimpl_;
+
+    void WakeupWaiters();
+    void SwitchStateToInUse();
+    void SwitchStateToReadyToUse();
 };
 
 }  // namespace engine::io
