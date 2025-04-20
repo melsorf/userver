@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include <userver/utils/fast_pimpl.hpp>
 #include <userver/utils/flags.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -9,13 +10,15 @@ USERVER_NAMESPACE_BEGIN
 namespace engine::io {
 
 /// @brief Flags for creating an eventfd
-enum class EventFdFlags {
-    kNone = 0,
-    kNonblocking = 1 << 0, // Set O_NONBLOCK flag on the new fd
-    kSemaphored = 1 << 1,  // Provide semaphore-like semantics for reads
-    kCloexec = 1 << 2,     // Set FD_CLOEXEC flag on the new fd
+enum class EventFdFlags : unsigned int {
+    kNone = 0,        // No flags
+    kNonblocking = 1, // Set O_NONBLOCK flag
+    kCloexec = 2,     // Set FD_CLOEXEC flag
+    kSemaphore = 4,   // Provide semaphore-like semantics for reads (Linux >= 2.6.30)
 };
 using EventFdCreateFlags = utils::Flags<EventFdFlags>;
+
+USERVER_DECLARE_FLAGS_OPERATORS(EventFdFlags)
 
 /// @brief Provides a file descriptor that can be used for event notification.
 /// Writing to the eventfd increments an internal counter, reading consumes it.
@@ -38,6 +41,9 @@ public:
     /// @brief Returns the underlying file descriptor.
     int GetFd() const noexcept;
 
+    /// @brief Checks if the file descriptor is valid.
+    bool IsValid() const noexcept;
+
     /// @brief Signals the eventfd by adding 1 to its counter.
     void Signal();
 
@@ -53,9 +59,8 @@ public:
     bool TryRead(uint64_t& value);
 
 private:
-    void Close() noexcept;
-
-    int fd_{-1};
+    struct Impl;
+    utils::FastPimpl<Impl, 8, 8> impl_;
 };
 
 } // namespace engine::io
