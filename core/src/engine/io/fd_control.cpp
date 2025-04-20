@@ -61,7 +61,7 @@ Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReady
 
 // Write operations on socket usually do not block, so it makes sense to reuse
 // the same ThreadControl for the sake of better balancing of ev threads.
-FdControl::FdControl(const ev::ThreadControl& control) : read_(control), write_(control) {}
+FdControl::FdControl(ev::ThreadControl& control) : read_(control), write_(control) {}
 
 FdControl::~FdControl() {
     try {

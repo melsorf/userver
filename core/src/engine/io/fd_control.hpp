@@ -124,7 +124,7 @@ public:
     // fd will be silently forced to nonblocking mode
     static FdControlHolder Adopt(int fd);
 
-    explicit FdControl(const ev::ThreadControl& control);
+    explicit FdControl(ev::ThreadControl& control);
     ~FdControl();
 
     explicit operator bool() const { return IsValid(); }
