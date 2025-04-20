@@ -103,7 +103,7 @@ public:
 
 private:
     friend class FdControl;
-    explicit Direction(const ev::ThreadControl& control) : poller_(control) {}
+    explicit Direction(ev::ThreadControl& control) : poller_(control) {}
 
     void Reset(int fd, Kind kind) { poller_.Reset(fd, kind); }
 
