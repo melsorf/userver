@@ -9,6 +9,7 @@
 #endif
 
 #include <cerrno>
+#include <system_error>
 
 #include <userver/engine/io/exception.hpp>
 #include <userver/logging/log.hpp>
@@ -53,7 +54,7 @@ struct EventFd::Impl {
         fd = ::eventfd(initial_value, native_flags);
         if (fd == -1) {
             const auto error_code = errno;
-            throw IoException("Cannot create eventfd") << IoErrorCode(error_code);
+            throw IoSystemError(error_code, "Cannot create eventfd");
         }
         LOG_DEBUG() << "Created eventfd: " << fd << " with flags=" << flags.Value();
 #else
@@ -72,7 +73,7 @@ struct EventFd::Impl {
         int pipe_fds[2] = {-1, -1};
         if (::pipe2(pipe_fds, pipe_flags) == -1) {
             const auto error_code = errno;
-            throw IoException("Cannot create pipe for eventfd fallback") << IoErrorCode(error_code);
+            throw IoSystemError(error_code, "Cannot create pipe for eventfd fallback");
         }
         fd = pipe_fds[0];       // Read end for polling
         write_fd = pipe_fds[1]; // Write end for signaling
@@ -129,7 +130,7 @@ struct EventFd::Impl {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     // If it was the first read attempt and non-blocking, throw EAGAIN
                     if (first_read && (create_flags & EventFdFlags::kNonblocking)) {
-                         throw IoException("Reading from eventfd pipe failed") << IoErrorCode(errno);
+                        throw IoSystemError(errno, "Reading from eventfd pipe failed");
                     }
                     // Otherwise, we read something or blocked, so break
                     break;
@@ -145,7 +146,7 @@ struct EventFd::Impl {
         } while (!(create_flags & EventFdFlags::kSemaphore)); // Drain if not semaphore
 
         if (value == 0 && !(create_flags & EventFdFlags::kNonblocking)) {
-            throw IoException("Reading from eventfd pipe failed") << IoErrorCode(EAGAIN);
+            throw IoSystemError(EAGAIN, "Reading from eventfd pipe failed");
         }
 #endif
         return value;
