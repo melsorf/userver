@@ -9,6 +9,10 @@
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
 
+#ifdef __linux__
+#include <cstdint>
+#endif
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine::impl {
@@ -29,6 +33,7 @@ class Direction;
 /// operations on a file descriptor. It does not provide read/write operations.
 /// @note FdPoller is not thread safe and its methods must not be called from
 /// multiple threads simultaneously.
+
 class FdPoller final {
 public:
     /// @brief Operation kind to wait for
@@ -97,8 +102,6 @@ private:
     };
 
     void WakeupWaiters();
-    void SwitchStateToInUse();
-    void SwitchStateToReadyToUse();
 
     struct Impl;
     utils::FastPimpl<Impl, 128, 16> pimpl_;

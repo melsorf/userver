@@ -50,8 +50,8 @@ private:
 
     moodycamel::ConcurrentQueue<impl::TaskContext*> queue_;
     moodycamel::LightweightSemaphore queue_semaphore_;
-    engine::io::EventFd eventfd_;
 
+    engine::io::EventFd eventfd_;
 };
 
 }  // namespace engine

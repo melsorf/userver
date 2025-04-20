@@ -39,7 +39,12 @@ struct TaskProcessorConfig {
     std::string task_trace_logger_name;
 
     /// @brief Use epoll for I/O events directly in worker threads instead of separate ev_threads (Linux only, requires TaskQueue scheduler)
+#ifdef __linux__
     bool use_per_thread_epoll{true};
+#else
+    // Force false on non-Linux platforms
+    static constexpr bool use_per_thread_epoll{false};
+#endif
 
     void SetName(const std::string& new_name);
 };

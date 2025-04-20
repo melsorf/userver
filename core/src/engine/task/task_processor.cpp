@@ -2,18 +2,25 @@
 
 #include <sys/types.h>
 #include <csignal>
+#include <chrono>
 
 #include <fmt/format.h>
 
 #ifdef __linux__
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <immintrin.h>
 #endif // __linux__
 #include <cerrno>
 
 #include <concurrent/impl/latch.hpp>
+#include <userver/engine/io/exception.hpp>
+#include <userver/engine/io/eventfd.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
+#include <userver/utils/cpu_relax.hpp>
 #include <userver/utils/impl/static_registration.hpp>
 #include <userver/utils/numeric_cast.hpp>
 #include <userver/utils/rand.hpp>
@@ -94,12 +101,14 @@ auto MakeTaskQueue(TaskProcessorConfig config) {
         case TaskQueueType::kGlobalTaskQueue:
             return ResultType{std::in_place_index<0>, std::move(config)};
         case TaskQueueType::kWorkStealingTaskQueue:
+#ifdef __linux__
             if (config.use_per_thread_epoll) {
                 // Epoll is not supported for work stealing
                 LOG_WARNING() << "use_per_thread_epoll=true is ignored because task_processor_queue is WorkStealingTaskQueue for TaskProcessor " << config.name;
                 // Force disable epoll if mistakenly enabled for work-stealing
                 config.use_per_thread_epoll = false;
             }
+#endif
             return ResultType{std::in_place_index<1>, std::move(config)};
     }
     UINVARIANT(false, "Unexpected value of TaskQueueType enum");
@@ -122,20 +131,23 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
             (config_.use_per_thread_epoll && std::holds_alternative<TaskQueue>(task_queue_))
             ? config_.worker_threads : 0)
 #endif
-{
     // Ensure epoll is only attempted with TaskQueue
+#ifdef __linux__
     if (config_.use_per_thread_epoll && !std::holds_alternative<TaskQueue>(task_queue_)) {
         throw std::logic_error(fmt::format(
             "TaskProcessor '{}': use_per_thread_epoll=true is only supported with TaskQueueType::kGlobalTaskQueue",
             Name()
         ));
     }
-
+#endif
     utils::impl::FinishStaticRegistration();
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name
-                   << " use_per_thread_epoll=" << config_.use_per_thread_epoll;
+#ifdef __linux__
+                   << " use_per_thread_epoll=" << config_.use_per_thread_epoll
+#endif
+                   ;
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
@@ -347,7 +359,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
     pools_->GetCoroPool().RegisterThread();
 
 #ifdef __linux__
-    if (config_.use_per_thread_epoll && std::holds_alternative<TaskQueue>(task_queue_)) {
+    if (config_.use_per_thread_epoll) {
         UASSERT(index < per_thread_epoll_data_.size());
         per_thread_epoll_data_[index].epoll_fd = epoll_create1(EPOLL_CLOEXEC);
         if (per_thread_epoll_data_[index].epoll_fd == -1) {
@@ -362,7 +374,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
 
             epoll_event ev{};
             ev.events = EPOLLIN | EPOLLET;
-            ev.data.ptr = reinterpret_cast<void*>(EpollDataType::kTaskQueue);
+            ev.data.ptr = reinterpret_cast<void*>(static_cast<uintptr_t>(EpollDataType::kTaskQueue));
             if (epoll_ctl(per_thread_epoll_data_[index].epoll_fd, EPOLL_CTL_ADD, task_queue_event_fd, &ev) == -1) {
                 LOG_ERROR() << "Failed to add task queue eventfd to epoll for worker " << index << " of task processor " << Name() << ": " << strerror(errno)
                             << ". Falling back to legacy processing for this thread.";
@@ -379,6 +391,11 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
             std::lock_guard lock(thread_id_map_mutex_);
             thread_id_to_index_[std::this_thread::get_id()] = index;
         }
+    }
+
+    {
+        std::lock_guard lock(thread_id_map_mutex_);
+        thread_id_to_index_[std::this_thread::get_id()] = index;
     }
 #endif
 
@@ -454,6 +471,7 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
     auto* task_queue_ptr = std::get_if<TaskQueue>(&task_queue_);
     UASSERT(task_queue_ptr); // Should always be TaskQueue in this function
     const int task_queue_event_fd = task_queue_ptr->GetEventFd();
+    const auto& task_queue_eventfd_obj = std::get<TaskQueue>(task_queue_).eventfd_;
 
     // Per-thread token for moodycamel queue
     thread_local moodycamel::ConsumerToken token(task_queue_ptr->queue_);
@@ -461,6 +479,7 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
     std::vector<epoll_event> events(kMaxEpollEvents);
     LOG_DEBUG() << "Worker " << worker_index << " starting epoll loop for task processor " << Name();
 
+start_loop:
     while (true) {
         impl::TaskContext* context_ptr = nullptr;
 
@@ -485,8 +504,7 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
                 LOG_TRACE() << "Worker " << worker_index << " popped task (spin)";
                 goto process_context; // Found task while spinning
             }
-            // TODO: Consider adding CPU relax hint, e.g., _mm_pause() on x86
-            // std::this_thread::yield();
+            utils::CpuRelax();
         }
 
         // 3. Blocking wait phase using epoll_wait
@@ -500,7 +518,7 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
                 continue; // Interrupted by signal, just retry
             }
             LOG_ERROR() << "epoll_wait failed for worker " << worker_index << " of task processor " << Name() << ": " << strerror(errno);
-            break;
+            continue;
         }
 
         // Process all received events
@@ -510,11 +528,18 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
             if (data_type_val == static_cast<uintptr_t>(EpollDataType::kTaskQueue)) {
                 // Task queue eventfd marker
                 LOG_TRACE() << "Worker " << worker_index << " received task queue event";
-                // Drain eventfd (essential for EPOLLET)
+                // Drain eventfd
                 uint64_t counter;
-                // Use TryRead until EAGAIN? ReadFromEventFd reads only once.
-                // For eventfd, reading once is sufficient to reset the signaled state if counter was >= 1.
-                [[maybe_unused]] auto res = engine::io::util::ReadFromEventFd(task_queue_event_fd, counter);
+                try {
+                    while (const_cast<engine::io::EventFd&>(task_queue_eventfd_obj).TryRead(counter)) {
+                         LOG_TRACE() << "Worker " << worker_index << " drained " << counter << " from eventfd " << task_queue_event_fd;
+                    }
+                } catch (const IoException& e) {
+                    LOG_ERROR() << "Error draining eventfd " << task_queue_event_fd << " for worker " << worker_index << ": " << e;
+                } catch (const std::exception& e) {
+                     LOG_ERROR() << "Unexpected error draining eventfd " << task_queue_event_fd << " for worker " << worker_index << ": " << e.what();
+                }
+                // Don't pop here, let the loop restart to check the queue
             } else {
                 // External I/O event (or other callback types)
                 LOG_TRACE() << "Worker " << worker_index << " received external IO/callback event";
@@ -524,7 +549,7 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
                         callback_data->Invoke(events[i].events);
                     } catch (const std::exception& e) {
                         LOG_ERROR() << "Unhandled exception in epoll callback for worker " << worker_index << ": " << e;
-                        // TODO: maybe deregister the fd?
+                        // TODO: Consider deregistering the fd or other error handling
                     }
                 } else {
                      LOG_ERROR() << "Received epoll event with non-null data.ptr but failed to cast to EpollCallbackDataBase*";
@@ -532,7 +557,8 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
             }
         } // end processing events
 
-        // After processing all epoll events, check the task queue non-blockingly
+        // After processing all epoll events, check the task queue non-blockingly again
+        // This handles the case where a task arrived while processing epoll events.
         if (task_queue_ptr->DoTryPop(token, context_ptr)) {
             if (TaskQueue::IsStopToken(context_ptr)) {
                 LOG_DEBUG() << "Worker " << worker_index << " received stop token (post-epoll pop)";
@@ -547,7 +573,7 @@ process_context:
 
     // Process the task context (same as ProcessTasks())
     {
-        boost::intrusive_ptr<impl::TaskContext> context{context_ptr, /* add_ref= */ false}; // Manage lifetime
+        boost::intrusive_ptr<impl::TaskContext> context{context_ptr, /* add_ref=*/false}; // Manage lifetime
         CheckWaitTime(*context);
         bool has_failed = false;
         try {
@@ -566,8 +592,6 @@ process_context:
     }
     // Loop back to the beginning (try immediate pop)
     goto start_loop;
-
-start_loop:;
 
 stop_processing:
     LOG_DEBUG() << "Worker " << worker_index << " stopping epoll loop for task processor " << Name();
@@ -635,14 +659,13 @@ bool TaskProcessor::ModifyEpollCallback(int fd, EpollCallbackDataBase& data, uin
 bool TaskProcessor::DeregisterEpollCallback(int fd) {
     const int epoll_fd = GetCurrentThreadEpollFd();
     if (epoll_fd == -1) {
-        // Don't warn if epoll wasn't available, maybe it was never registered
         LOG_TRACE() << "Attempt to deregister epoll callback for fd " << fd << " on thread " << std::this_thread::get_id()
                     << " which does not have a valid epoll fd (TaskProcessor " << Name() << ")";
         return false;
     }
 
     epoll_event ev{};
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev) == -1) {
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
         if (errno != ENOENT) {
            LOG_WARNING() << "Failed to remove fd " << fd << " from epoll fd " << epoll_fd << ": " << strerror(errno);
            return false;

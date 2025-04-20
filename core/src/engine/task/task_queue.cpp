@@ -1,6 +1,9 @@
 #include <engine/task/task_queue.hpp>
 
 #include <engine/task/task_context.hpp>
+#include <userver/engine/io/exception.hpp>
+#include <userver/utils/assert.hpp>
+#include <userver/logging/log.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -11,8 +14,7 @@ constexpr std::size_t kSemaphoreInitialCount = 0;
 }
 
 TaskQueue::TaskQueue(const TaskProcessorConfig& config)
-    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations),
-    eventfd_{}
+    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations), eventfd_{}
 {}
 
 void TaskQueue::Push(boost::intrusive_ptr<impl::TaskContext>&& context) {
@@ -25,7 +27,7 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::TryPop() {
     thread_local moodycamel::ConsumerToken token(queue_);
     impl::TaskContext* context_ptr = nullptr;
     if (DoTryPop(token, context_ptr)) {
-        return boost::intrusive_ptr<impl::TaskContext>{context_ptr, /* add_ref= */ false};
+        return boost::intrusive_ptr<impl::TaskContext>{context_ptr, /* add_ref=*/false};
     }
     return nullptr;
 }
@@ -70,8 +72,11 @@ void TaskQueue::DoPush(impl::TaskContext* context) {
     // moodycamel::BlockingConcurrentQueue::enqueue
     queue_.enqueue(context);
     queue_semaphore_.signal();
-    [[maybe_unused]] auto result = engine::io::util::WriteToEventFd(eventfd_, 1);
-    // TODO: Handle potential error from WriteToEventFd? For now, assume it works
+    try {
+        eventfd_.Signal(); // Signal eventfd for epoll waiters
+    } catch (const std::exception& e) {
+        LOG_ERROR() << "Failed to signal eventfd in TaskQueue::DoPush: " << e.what();
+    }
 }
 
 impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {

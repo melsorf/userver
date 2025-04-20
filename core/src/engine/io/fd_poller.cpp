@@ -1,9 +1,14 @@
 #include <userver/engine/io/fd_poller.hpp>
 
+#include <engine/ev/thread_control.hpp>
 #include <engine/ev/watcher.hpp>
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
+#include <userver/utils/assert.hpp>
+#include <userver/utils/atomic.hpp>
+#include <userver/logging/log.hpp>
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -33,6 +38,43 @@ USERVER_NAMESPACE_BEGIN
 namespace engine::io {
 
 namespace {
+
+#ifdef __linux__
+uint32_t ToEpollEvents(FdPoller::Kind kind) {
+    uint32_t events = 0;
+    if (static_cast<int>(kind) & static_cast<int>(FdPoller::Kind::kRead)) {
+        events |= EPOLLIN;
+    }
+    if (static_cast<int>(kind) & static_cast<int>(FdPoller::Kind::kWrite)) {
+        events |= EPOLLOUT;
+    }
+    return events;
+}
+    
+std::optional<FdPoller::Kind> FromEpollEvents(uint32_t events) {
+    int kind_int = 0;
+    if (events & (EPOLLIN | EPOLLERR | EPOLLHUP)) {
+        kind_int |= static_cast<int>(FdPoller::Kind::kRead);
+    }
+    if (events & (EPOLLOUT | EPOLLERR | EPOLLHUP)) {
+        kind_int |= static_cast<int>(FdPoller::Kind::kWrite);
+    }
+
+    if (kind_int == 0) return std::nullopt;
+    return static_cast<FdPoller::Kind>(kind_int);
+}
+#endif // __linux__
+    
+int ToEvEvents(FdPoller::Kind kind) {
+    int events = 0;
+    if (static_cast<int>(kind) & static_cast<int>(FdPoller::Kind::kRead)) {
+        events |= EV_READ;
+    }
+    if (static_cast<int>(kind) & static_cast<int>(FdPoller::Kind::kWrite)) {
+        events |= EV_WRITE;
+    }
+    return events;
+}
 
 int GetEvMode(FdPoller::Kind kind) {
     switch (kind) {
@@ -66,7 +108,11 @@ FdPoller::Kind GetUserMode(int ev_events) {
 
 }  // namespace
 
-struct FdPoller::Impl final : public engine::impl::ContextAccessor {
+struct FdPoller::Impl final : public engine::impl::ContextAccessor
+#ifdef __linux__
+                            , public engine::EpollCallbackDataBase
+#endif
+{
     Impl(ev::ThreadControl control);
 
     ~Impl();
@@ -79,6 +125,11 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
     void Reset(int fd, Kind kind);
 
     void StopWatcher() noexcept;
+
+#ifdef __linux__
+    // EpollCallbackDataBase implementation
+    void Invoke(uint32_t epoll_events) override;
+#endif
 
     static void IoWatcherCb(struct ev_loop*, ev_io*, int) noexcept;
     void WakeupWaiters();
@@ -106,48 +157,139 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
 
     void RethrowErrorResult() const override {}
 
+    void SwitchStateToInUse();
+    void SwitchStateToReadyToUse();
+
+    int fd_ = -1;
+    Kind kind_ = Kind::kRead;
     std::atomic<FdPoller::State> state_{FdPoller::State::kInvalid};
+    ev::ThreadControl& control_;
+    engine::TaskProcessor* task_processor_ = nullptr;
     engine::impl::FastPimplWaitListLight waiters_;
     ev::Watcher<ev_io> watcher_;
     std::atomic<FdPoller::Kind> events_that_happened_{};
+
+#ifdef __linux__
+    bool using_epoll_ = false; // Track if epoll is currently used for this fd
+#endif
 };
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
-FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
+FdPoller::Impl::Impl(ev::ThreadControl& control) : control_(control), watcher_(control_, this) {
+    watcher_.Init(&IoWatcherCb);
+}
 
 FdPoller::Impl::~Impl() = default;
 
+#ifdef __linux__
+void FdPoller::Impl::Invoke(uint32_t epoll_events) {
+    LOG_TRACE() << "FdPoller::Impl::Invoke called for fd=" << fd_ << " epoll_events=" << epoll_events;
+    auto kind_opt = FromEpollEvents(epoll_events);
+    if (kind_opt) {
+        int ev_kind = 0;
+        if (static_cast<int>(*kind_opt) & static_cast<int>(FdPoller::Kind::kRead)) {
+            ev_kind |= EV_READ;
+        }
+        if (static_cast<int>(*kind_opt) & static_cast<int>(FdPoller::Kind::kWrite)) {
+            ev_kind |= EV_WRITE;
+        }
+        // Use relaxed order, WakeupWaiters provides synchronization
+        events_that_happened_.store(ev_kind, std::memory_order_relaxed);
+        WakeupWaiters();
+    } else {
+        LOG_WARNING() << "FdPoller::Impl::Invoke received unexpected epoll events " << epoll_events << " for fd=" << fd_;
+    }
+}
+#endif
+
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
+    UASSERT(state_ == State::kReadyToUse);
 
     auto& current = current_task::GetCurrentTaskContext();
+    task_processor_ = &current.GetTaskProcessor();
 
     engine::impl::FutureWaitStrategy wait_strategy{*this, current};
-    auto ret = current.Sleep(wait_strategy, deadline);
+    engine::impl::TaskContext::WakeupSource wakeup_source = engine::impl::TaskContext::WakeupSource::kNone;
 
-    /*
-     * Manually call Stop() here to be sure that after DoWait() no waiter_'s
-     * callback (IoWatcherCb) is running.
-     */
-    watcher_.Stop();
-    return ret;
+#ifdef __linux__
+    int epoll_fd = task_processor_->GetCurrentThreadEpollFd();
+    if (epoll_fd != -1) {
+        // Try using per-thread epoll
+        LOG_TRACE() << "FdPoller using epoll for fd=" << fd_ << " on epoll_fd=" << epoll_fd;
+        uint32_t epoll_events = ToEpollEvents(kind_);
+        if (task_processor_->RegisterEpollCallback(fd_, *this, epoll_events)) {
+            using_epoll_ = true;
+            SwitchStateToInUse(); // Mark as in use for epoll wait
+            try {
+                wakeup_source = current.Sleep(wait_strategy, deadline);
+            } catch (...) {
+                // Ensure deregistration even if Sleep throws
+                if (using_epoll_) {
+                    task_processor_->DeregisterEpollCallback(fd_);
+                    using_epoll_ = false;
+                }
+                SwitchStateToReadyToUse();
+                throw;
+            }
+            // Deregister after waking up or timeout/cancel
+            if (using_epoll_) {
+                task_processor_->DeregisterEpollCallback(fd_);
+                using_epoll_ = false;
+            }
+            SwitchStateToReadyToUse();
+            return wakeup_source; // Return after epoll attempt
+        } else {
+            LOG_WARNING() << "Failed to register epoll callback for fd=" << fd_ << ", falling back to ev_watcher";
+            // Fallback to ev_watcher if registration fails
+        }
+    } else {
+         LOG_TRACE() << "FdPoller falling back to ev_watcher for fd=" << fd_ << " (no epoll fd)";
+         // Fallback if epoll is disabled or unavailable on this thread
+    }
+#endif // __linux__
+    // Fallback or non-Linux: Use ev::Watcher
+    LOG_TRACE() << "FdPoller using ev_watcher for fd=" << fd_;
+    watcher_.Set(fd_, ToEvEvents(kind_));
+    watcher_.StartAsync(); // Use StartAsync
+    SwitchStateToInUse(); // Mark as in use for ev wait
+    try {
+        wakeup_source = current.Sleep(wait_strategy, deadline);
+    } catch (...) {
+        watcher_.Stop(); // Ensure watcher is stopped on exception
+        SwitchStateToReadyToUse();
+        throw;
+    }
+    watcher_.Stop(); // Stop watcher after waking up
+    SwitchStateToReadyToUse();
+    return wakeup_source;
 }
 
 void FdPoller::Impl::Invalidate() {
-    StopWatcher();
+    if (state_.load(std::memory_order_relaxed) == State::kInvalid) return;
 
-    auto old_state = State::kReadyToUse;
-    const auto res = state_.compare_exchange_strong(old_state, State::kInvalid);
+    // Ensure we are not in the middle of a wait
+    UASSERT_MSG(state_.load(std::memory_order_relaxed) != State::kInUse,
+               "Cannot invalidate FdPoller while it is in use (waiting)");
 
-    UINVARIANT(
-        res,
-        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kReadyToUse, old_state)
-    );
+    StopWatcher(); // Stops both epoll (if active) and ev_watcher
+
+    fd_ = -1;
+    // Use exchange with acquire-release to synchronize with potential concurrent Resets
+    state_.exchange(State::kInvalid, std::memory_order_acq_rel);
+    ResetReady();
+    WakeupWaiters();
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
-    UASSERT(IsValid());
+#ifdef __linux__
+    if (using_epoll_ && task_processor_) {
+        task_processor_->DeregisterEpollCallback(fd_);
+        using_epoll_ = false;
+    }
+#endif
+    // Always try to stop ev_watcher, it's safe even if not started or fd is invalid
     watcher_.Stop();
 }
 
@@ -206,9 +348,9 @@ void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 
 void FdPoller::WakeupWaiters() { pimpl_->WakeupWaiters(); }
 
-void FdPoller::SwitchStateToInUse() {
+void FdPoller::Impl::SwitchStateToInUse() {
     auto old_state = State::kReadyToUse;
-    const auto res = pimpl_->state_.compare_exchange_strong(old_state, State::kInUse);
+    const auto res = state_.compare_exchange_strong(old_state, State::kInUse);
 
     UASSERT_MSG(
         res,
@@ -216,19 +358,28 @@ void FdPoller::SwitchStateToInUse() {
     );
 }
 
-void FdPoller::SwitchStateToReadyToUse() {
+void FdPoller::Impl::SwitchStateToReadyToUse() {
     auto old_state = State::kInUse;
-    const auto res = pimpl_->state_.compare_exchange_strong(old_state, State::kReadyToUse);
+    const auto res = state_.compare_exchange_strong(old_state, State::kReadyToUse);
     UASSERT_MSG(
         res, fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kInUse, old_state)
     );
 }
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
-    UASSERT(!IsValid());
-    UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-    watcher_.Set(fd, GetEvMode(kind));
-    state_ = State::kReadyToUse;
+    UASSERT(fd >= 0);
+    UASSERT_MSG(state_.load(std::memory_order_relaxed) != State::kInUse,
+               "Cannot reset FdPoller while it is in use (waiting)");
+
+    if (state_.load(std::memory_order_relaxed) != State::kInvalid) {
+        StopWatcher(); // Stop previous watch if any
+    }
+
+    fd_ = fd;
+    kind_ = kind;
+    // Use store with release semantics to make fd_ and kind_ visible before state change
+    state_.store(State::kReadyToUse, std::memory_order_release);
+    ResetReady();
 }
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }

@@ -7,6 +7,8 @@
 #include <thread>
 #include <variant>
 #include <vector>
+#include <mutex>
+#include <unordered_map> 
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #ifdef __linux__
@@ -19,7 +21,6 @@
 #include <engine/task/work_stealing_queue/task_queue.hpp>
 #include <userver/concurrent/impl/interference_shield.hpp>
 #include <userver/engine/impl/detached_tasks_sync_block.hpp>
-#include </core/src/engine/io/eventfd.hpp>
 #include <userver/logging/logger.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
@@ -37,7 +38,14 @@ namespace ev {
 class ThreadPool;
 }  // namespace ev
 
-struct EpollCallbackDataBase;
+#ifdef __linux__
+// Base class for epoll callbacks
+struct EpollCallbackDataBase {
+    virtual ~EpollCallbackDataBase() = default;
+    // Called by ProcessTasksEpoll when an event occurs for the associated fd
+    virtual void Invoke(uint32_t epoll_events) = 0;
+};
+#endif // __linux__
 
 class TaskProcessor final {
 public:
@@ -89,13 +97,13 @@ public:
     // Must only be called from a TaskProcessor worker thread.
     int GetCurrentThreadEpollFd() const;
 
-    // Register/Unregister external callbacks for epoll events.
+    // Register/Modify/Unregister external callbacks for epoll events.
     // Must only be called from the corresponding TaskProcessor worker thread.
     // `data` must remain valid until Unregister is called or TP shuts down.
     // Returns true on success.
     bool RegisterEpollCallback(int fd, EpollCallbackDataBase& data, uint32_t epoll_events);
     bool ModifyEpollCallback(int fd, EpollCallbackDataBase& data, uint32_t epoll_events);
-    bool UnregisterEpollCallback(int fd);
+    bool DeregisterEpollCallback(int fd);
 #endif
 
 private:
@@ -107,21 +115,25 @@ private:
         std::atomic<OverloadByLength> overload_by_length{0};
     };
 
-    // Per-thread epoll state
+    #ifdef __linux__
     struct PerThreadEpoll final {
         int epoll_fd = -1;
-        // Add mapping from fd -> EpollCallbackDataBase* here?
     };
     std::vector<PerThreadEpoll> per_thread_epoll_data_;
     // Store thread_id -> index mapping for GetCurrentThreadEpollFd
+    mutable std::mutex thread_id_map_mutex_; // Protects thread_id_to_index_
     std::unordered_map<std::thread::id, size_t> thread_id_to_index_;
-    std::mutex thread_id_map_mutex_; // Protects thread_id_to_index_
+
+    enum class EpollDataType : uintptr_t {
+        kTaskQueue = 1,
+    };
+#endif // __linux__
 
     void Cleanup() noexcept;
 
     void PrepareWorkerThread(std::size_t index) noexcept;
 
-    void FinalizeWorkerThread() noexcept;
+    void FinalizeWorkerThread(std::size_t index) noexcept;
 
     void ProcessTasks() noexcept;
 
@@ -163,12 +175,6 @@ private:
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
-};
-
-struct EpollCallbackDataBase {
-    virtual ~EpollCallbackDataBase() = default;
-    // Called by ProcessTasksEpoll when an event occurs for the associated fd
-    virtual void Invoke(uint32_t epoll_events) = 0;
 };
 
 /// Register a function that runs on all threads on task processor creation.
