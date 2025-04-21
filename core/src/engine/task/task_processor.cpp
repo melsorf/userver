@@ -163,7 +163,7 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
 #else
                 ProcessTasks();
 #endif
-                FinalizeWorkerThread(i);
+                FinalizeWorkerThread();
             });
         }
 
@@ -663,7 +663,6 @@ bool TaskProcessor::DeregisterEpollCallback(int fd) {
         return false;
     }
 
-    epoll_event ev{};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
         if (errno != ENOENT) {
            LOG_WARNING() << "Failed to remove fd " << fd << " from epoll fd " << epoll_fd << ": " << strerror(errno);
