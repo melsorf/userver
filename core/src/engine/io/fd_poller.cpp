@@ -205,15 +205,6 @@ void FdPoller::Impl::Invoke(uint32_t epoll_events) {
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
 
-    State current_state = state_.load(std::memory_order_acquire);
-    if (current_state != State::kReadyToUse) {
-        LOG_ERROR() << "FdPoller::Impl::DoWait: Invalid state=" << current_state 
-                    << ", fd=" << fd_ << ". Expected state=kReadyToUse";
-        UASSERT_MSG(false, fmt::format("Socket misuse: FdPoller.DoWait called in invalid state: '{}', "
-                                     "expected '{}'", current_state, State::kReadyToUse));
-        return engine::impl::TaskContext::WakeupSource::kNone;
-    }
-
     auto& current = current_task::GetCurrentTaskContext();
     task_processor_ = &current.GetTaskProcessor();
 
