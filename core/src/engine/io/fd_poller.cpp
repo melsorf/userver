@@ -195,6 +195,7 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor
     engine::TaskProcessor* task_processor_ = nullptr;
     engine::impl::FastPimplWaitListLight waiters_;
     ev::Watcher<ev_io> watcher_;
+    engine::impl::TaskContext* current_user_ = nullptr;
     std::atomic<FdPoller::Kind> events_that_happened_{};
 
 #ifdef __linux__
@@ -373,8 +374,19 @@ void FdPoller::WakeupWaiters() { pimpl_->WakeupWaiters(); }
 void FdPoller::Impl::SwitchStateToInUse() {
     State expected_state = State::kReadyToUse;
     if (!state_.compare_exchange_strong(expected_state, State::kInUse, std::memory_order_acq_rel)) {
-        LOG_ERROR() << "FdPoller::Impl::SwitchStateToInUse: Invalid state transition. "
-                    << "Expected state=kReadyToUse, actual state=" << expected_state;
+        if (expected_state == State::kInUse) {
+            // Check if the current task is already the owner using thread/task ID
+            auto& current_task_context = current_task::GetCurrentTaskContext();
+            if (current_user_ == &current_task_context) {
+                // Same task is recursively waiting on the same FD poller
+                LOG_WARNING() << "FdPoller::Impl::SwitchStateToInUse: Recursive wait detected on fd=" << fd_;
+                return; 
+            }
+        }
+        
+        LOG_ERROR() << "FdPoller::Impl::SwitchStateToInUse: Invalid concurrent use detected. "
+                  << "Expected state=kReadyToUse, actual state=" << expected_state 
+                  << " for fd=" << fd_;
         UASSERT_MSG(
             false,
             fmt::format(
@@ -385,13 +397,20 @@ void FdPoller::Impl::SwitchStateToInUse() {
             )
         );
     }
+    
+    current_user_ = &current_task::GetCurrentTaskContext();
 }
 
 void FdPoller::Impl::SwitchStateToReadyToUse() {
     State expected_state = State::kInUse;
     if (!state_.compare_exchange_strong(expected_state, State::kReadyToUse, std::memory_order_acq_rel)) {
+        if (expected_state == State::kInvalid) {
+            LOG_DEBUG() << "FdPoller::Impl::SwitchStateToReadyToUse: FD was invalidated during wait";
+            return;
+        }
+        
         LOG_ERROR() << "FdPoller::Impl::SwitchStateToReadyToUse: Invalid state transition. "
-                    << "Expected state=kInUse, actual state=" << expected_state;
+                  << "Expected state=kInUse, actual state=" << expected_state;
         UASSERT_MSG(
             false,
             fmt::format(
@@ -402,6 +421,8 @@ void FdPoller::Impl::SwitchStateToReadyToUse() {
             )
         );
     }
+    
+    current_user_ = nullptr;
 }
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
