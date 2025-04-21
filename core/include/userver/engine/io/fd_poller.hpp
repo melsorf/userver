@@ -99,14 +99,14 @@ public:
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept;
     /// @endcond
 
-private:
-    friend class impl::Direction;
-
     enum class State : int {
         kInvalid,
         kReadyToUse,
         kInUse,  /// < used only in debug to detect invalid concurrent usage
     };
+
+private:
+    friend class impl::Direction;
 
     struct Impl;
     utils::FastPimpl<Impl, 192, 16> pimpl_;
