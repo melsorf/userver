@@ -133,13 +133,14 @@ private:
 
     void PrepareWorkerThread(std::size_t index) noexcept;
 
-    void FinalizeWorkerThread(std::size_t index) noexcept;
+    void FinalizeWorkerThread() noexcept;
 
     void ProcessTasks() noexcept;
 
 #ifdef __linux__
-    // Epoll-based processing loop
     void ProcessTasksEpoll() noexcept;
+
+    void ProcessSingleTask(impl::TaskContext* context_ptr, size_t worker_index) noexcept;
 #endif
 
     void CheckWaitTime(impl::TaskContext& context);

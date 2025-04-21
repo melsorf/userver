@@ -54,16 +54,8 @@ void TaskQueue::StopProcessing() { DoPush(nullptr); }
 
 std::size_t TaskQueue::GetSizeApproximate() const noexcept { return queue_.size_approx(); }
 
-int TaskQueue::GetEventFd() const noexcept {
-    return eventfd_.GetFd();
-}
-
 bool TaskQueue::DoTryPop(moodycamel::ConsumerToken& token, impl::TaskContext*& context) {
     return queue_.try_dequeue(token, context);
-}
-
-bool TaskQueue::IsStopToken(impl::TaskContext* context) {
-    return context == nullptr;
 }
 
 void TaskQueue::PrepareWorker(std::size_t) {}

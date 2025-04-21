@@ -402,7 +402,7 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
     TaskProcessorThreadStartedHook();
 }
 
-void TaskProcessor::FinalizeWorkerThread(std::size_t index) noexcept {
+void TaskProcessor::FinalizeWorkerThread() noexcept {
 #ifdef __linux__
     if (config_.use_per_thread_epoll && std::holds_alternative<TaskQueue>(task_queue_)) {
         // Remove thread_id mapping
@@ -412,8 +412,6 @@ void TaskProcessor::FinalizeWorkerThread(std::size_t index) noexcept {
         }
         // Epoll fd is closed in Cleanup after thread joins
     }
-#else
-    (void)index; // Unused
 #endif
     pools_->GetCoroPool().ClearLocalCache();
 }
@@ -443,6 +441,27 @@ void TaskProcessor::ProcessTasks() noexcept {
 }
 
 #ifdef __linux__
+
+void TaskProcessor::ProcessSingleTask(impl::TaskContext* context_ptr, size_t worker_index) noexcept {
+    UASSERT(context_ptr && !TaskQueue::IsStopToken(context_ptr));
+    boost::intrusive_ptr<impl::TaskContext> context{context_ptr, /* add_ref=*/false}; // Manage lifetime
+    CheckWaitTime(*context);
+    bool has_failed = false;
+    try {
+        impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
+        context->DoStep();
+    } catch (const std::exception& ex) {
+        LOG_ERROR() << "uncaught exception from DoStep in worker " << worker_index << ": " << ex;
+        has_failed = true;
+    }
+
+    pools_->GetCoroPool().AccountStackUsage();
+
+    if (has_failed || context->IsFinished()) {
+        context->FinishDetached();
+    }
+}
+
 void TaskProcessor::ProcessTasksEpoll() noexcept {
     size_t worker_index = -1;
     {
@@ -471,15 +490,12 @@ void TaskProcessor::ProcessTasksEpoll() noexcept {
     auto* task_queue_ptr = std::get_if<TaskQueue>(&task_queue_);
     UASSERT(task_queue_ptr); // Should always be TaskQueue in this function
     const int task_queue_event_fd = task_queue_ptr->GetEventFd();
-    const auto& task_queue_eventfd_obj = std::get<TaskQueue>(task_queue_).eventfd_;
-
-    // Per-thread token for moodycamel queue
-    thread_local moodycamel::ConsumerToken token(task_queue_ptr->queue_);
+    
+    thread_local moodycamel::ConsumerToken token = task_queue_ptr->GetConsumerToken();
 
     std::vector<epoll_event> events(kMaxEpollEvents);
     LOG_DEBUG() << "Worker " << worker_index << " starting epoll loop for task processor " << Name();
 
-start_loop:
     while (true) {
         impl::TaskContext* context_ptr = nullptr;
 
@@ -487,24 +503,31 @@ start_loop:
         if (task_queue_ptr->DoTryPop(token, context_ptr)) {
             if (TaskQueue::IsStopToken(context_ptr)) {
                 LOG_DEBUG() << "Worker " << worker_index << " received stop token (immediate pop)";
-                goto stop_processing;
+                break; // Exit loop
             }
             LOG_TRACE() << "Worker " << worker_index << " popped task (immediate)";
-            goto process_context;
+            ProcessSingleTask(context_ptr, worker_index);
+            continue; // Go back to immediate pop
         }
 
-        // 2. Spin phase
+        // 2. Spin loop pop
+        bool task_found_spinning = false;
         const size_t spin_iterations = config_.spinning_iterations;
         for (size_t i = 0; i < spin_iterations; ++i) {
             if (task_queue_ptr->DoTryPop(token, context_ptr)) {
                 if (TaskQueue::IsStopToken(context_ptr)) {
                     LOG_DEBUG() << "Worker " << worker_index << " received stop token (spin pop)";
-                    goto stop_processing;
+                    goto stop_processing_label; // Break outer loop
                 }
-                LOG_TRACE() << "Worker " << worker_index << " popped task (spin)";
-                goto process_context; // Found task while spinning
+                task_found_spinning = true;
+                break; // Exit spin loop
             }
-            utils::CpuRelax();
+        }
+
+        if (task_found_spinning) {
+            LOG_TRACE() << "Worker " << worker_index << " popped task (spin)";
+            ProcessSingleTask(context_ptr, worker_index);
+            continue; // Go back to immediate pop
         }
 
         // 3. Blocking wait phase using epoll_wait
@@ -518,7 +541,7 @@ start_loop:
                 continue; // Interrupted by signal, just retry
             }
             LOG_ERROR() << "epoll_wait failed for worker " << worker_index << " of task processor " << Name() << ": " << strerror(errno);
-            continue;
+            continue; // TODO: Consider breaking or specific error handling?
         }
 
         // Process all received events
@@ -531,10 +554,10 @@ start_loop:
                 // Drain eventfd
                 uint64_t counter;
                 try {
-                    while (const_cast<engine::io::EventFd&>(task_queue_eventfd_obj).TryRead(counter)) {
-                         LOG_TRACE() << "Worker " << worker_index << " drained " << counter << " from eventfd " << task_queue_event_fd;
-                    }
-                } catch (const IoException& e) {
+                    while (task_queue_ptr->GetEventFdObject().TryRead(counter)) {
+                        LOG_TRACE() << "Worker " << worker_index << " drained " << counter << " from eventfd " << task_queue_event_fd;
+                   }
+                } catch (const engine::io::IoException& e) {
                     LOG_ERROR() << "Error draining eventfd " << task_queue_event_fd << " for worker " << worker_index << ": " << e;
                 } catch (const std::exception& e) {
                      LOG_ERROR() << "Unexpected error draining eventfd " << task_queue_event_fd << " for worker " << worker_index << ": " << e.what();
@@ -562,38 +585,14 @@ start_loop:
         if (task_queue_ptr->DoTryPop(token, context_ptr)) {
             if (TaskQueue::IsStopToken(context_ptr)) {
                 LOG_DEBUG() << "Worker " << worker_index << " received stop token (post-epoll pop)";
-                goto stop_processing;
+                break;
             }
             LOG_TRACE() << "Worker " << worker_index << " popped task (post-epoll)";
-            goto process_context;
+            ProcessSingleTask(context_ptr, worker_index);
         }
     }
-process_context:
-    UASSERT(context_ptr && !TaskQueue::IsStopToken(context_ptr));
 
-    // Process the task context (same as ProcessTasks())
-    {
-        boost::intrusive_ptr<impl::TaskContext> context{context_ptr, /* add_ref=*/false}; // Manage lifetime
-        CheckWaitTime(*context);
-        bool has_failed = false;
-        try {
-            impl::TaskCounter::RunningToken run_token{GetTaskCounter()};
-            context->DoStep();
-        } catch (const std::exception& ex) {
-            LOG_ERROR() << "uncaught exception from DoStep in worker " << worker_index << ": " << ex;
-            has_failed = true;
-        }
-
-        pools_->GetCoroPool().AccountStackUsage();
-
-        if (has_failed || context->IsFinished()) {
-            context->FinishDetached();
-        }
-    }
-    // Loop back to the beginning (try immediate pop)
-    goto start_loop;
-
-stop_processing:
+stop_processing_label: // Label for breaking outer loop
     LOG_DEBUG() << "Worker " << worker_index << " stopping epoll loop for task processor " << Name();
 }
 

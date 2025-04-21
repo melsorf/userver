@@ -35,13 +35,17 @@ public:
     void PrepareWorker(std::size_t index);
 
     // Get the file descriptor of the eventfd used for signaling task availability
-    int GetEventFd() const noexcept;
+    int GetEventFd() const noexcept { return eventfd_.GetFd(); }
+
+    engine::io::EventFd& GetEventFdObject() { return eventfd_; }
+
+    moodycamel::ConsumerToken GetConsumerToken() { return moodycamel::ConsumerToken(queue_); }
 
     // Non-blocking pop logic, returns true if an item (or stop token) was dequeued
     bool DoTryPop(moodycamel::ConsumerToken& token, impl::TaskContext*& context);
 
     // Check if the popped context is the stop token
-    static bool IsStopToken(impl::TaskContext* context);
+    static bool IsStopToken(impl::TaskContext* context) { return context == nullptr; }
 
 private:
     void DoPush(impl::TaskContext* context);
@@ -52,6 +56,7 @@ private:
     moodycamel::LightweightSemaphore queue_semaphore_;
 
     engine::io::EventFd eventfd_;
+    std::atomic<bool> is_running_{true};
 };
 
 }  // namespace engine
