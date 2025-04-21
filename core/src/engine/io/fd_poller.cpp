@@ -204,7 +204,15 @@ void FdPoller::Impl::Invoke(uint32_t epoll_events) {
 
 engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline) {
     UASSERT(IsValid());
-    UASSERT(state_ == State::kReadyToUse);
+
+    State current_state = state_.load(std::memory_order_acquire);
+    if (current_state != State::kReadyToUse) {
+        LOG_ERROR() << "FdPoller::Impl::DoWait: Invalid state=" << current_state 
+                    << ", fd=" << fd_ << ". Expected state=kReadyToUse";
+        UASSERT_MSG(false, fmt::format("Socket misuse: FdPoller.DoWait called in invalid state: '{}', "
+                                     "expected '{}'", current_state, State::kReadyToUse));
+        return engine::impl::TaskContext::WakeupSource::kNone;
+    }
 
     auto& current = current_task::GetCurrentTaskContext();
     task_processor_ = &current.GetTaskProcessor();
@@ -350,21 +358,27 @@ void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 void FdPoller::WakeupWaiters() { pimpl_->WakeupWaiters(); }
 
 void FdPoller::Impl::SwitchStateToInUse() {
-    auto old_state = State::kReadyToUse;
-    const auto res = state_.compare_exchange_strong(old_state, State::kInUse);
-
-    UASSERT_MSG(
-        res,
-        fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kReadyToUse, old_state)
-    );
+    State expected_state = State::kReadyToUse;
+    if (!state_.compare_exchange_strong(expected_state, State::kInUse, 
+                                      std::memory_order_acq_rel)) {
+        LOG_ERROR() << "FdPoller::Impl::SwitchStateToInUse: Invalid state transition. "
+                    << "Expected state=kReadyToUse, actual state=" << expected_state;
+        UASSERT_MSG(false, fmt::format("Socket misuse: expected socket state is '{}', "
+                                      "actual state is '{}'", 
+                                      State::kReadyToUse, expected_state));
+    }
 }
 
 void FdPoller::Impl::SwitchStateToReadyToUse() {
-    auto old_state = State::kInUse;
-    const auto res = state_.compare_exchange_strong(old_state, State::kReadyToUse);
-    UASSERT_MSG(
-        res, fmt::format("Socket misuse: expected socket state is '{}', actual state is '{}'", State::kInUse, old_state)
-    );
+    State expected_state = State::kInUse;
+    if (!state_.compare_exchange_strong(expected_state, State::kReadyToUse, 
+                                      std::memory_order_acq_rel)) {
+        LOG_ERROR() << "FdPoller::Impl::SwitchStateToReadyToUse: Invalid state transition. "
+                    << "Expected state=kInUse, actual state=" << expected_state;
+        UASSERT_MSG(false, fmt::format("Socket misuse: expected socket state is '{}', "
+                                     "actual state is '{}'", 
+                                     State::kInUse, expected_state));
+    }
 }
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
