@@ -8,6 +8,7 @@
 
 #include <userver/engine/deadline.hpp>
 #include <userver/utils/fast_pimpl.hpp>
+#include <userver/engine/io/fd_poller.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -20,6 +21,8 @@ class ThreadControl;
 }
 
 namespace engine::io {
+
+class EpollPoller;
 
 namespace impl {
 class Direction;
@@ -77,6 +80,10 @@ public:
 
     /// Reset "ready" flag for WaitAny().
     void ResetReady() noexcept;
+
+    bool RegisterWithEpoll(engine::io::EpollPoller* epoll_io);
+
+    static bool ShouldUseEpollMode();
 
     /// Get event kind that was triggered on this poller.
     /// Resets "ready" flag.

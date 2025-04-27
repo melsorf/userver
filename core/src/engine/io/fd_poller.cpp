@@ -4,6 +4,7 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/io/epoll_poller.hpp>
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -229,9 +230,43 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
     watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
+
+    // If we're on a TaskProcessor thread with epoll mode enabled, register with it
+    if (FdPoller::ShouldUseEpollMode()) {
+        if (auto* task_processor = engine::current_task::GetTaskProcessorOptional()) {
+            if (task_processor->IsEpollModeEnabled()) {
+                if (auto* epoll_support = task_processor->GetEpollSupport()) {
+                    static_cast<FdPoller*>(this->owner_)->RegisterWithEpoll(epoll_support);
+                }
+            }
+        }
+    }
 }
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }
+
+bool FdPoller::RegisterWithEpoll(engine::io::EpollPoller* epoll_support) {
+    if (!epoll_support || !IsValid()) return false;
+    
+    auto kind = pimpl_->events_that_happened_.load(std::memory_order_relaxed);
+    
+    io::EpollFlags flags;
+    flags.edge_triggered = true;
+    
+    return epoll_support->Add(GetFd(), 
+                            static_cast<io::EpollPoller::Kind>(static_cast<int>(kind)),
+                            this, flags);
+}
+  
+bool FdPoller::ShouldUseEpollMode() {
+    static const bool use_epoll = !getenv("USERVER_NO_EPOLL_MODE") && 
+#ifdef __linux__
+    true;
+#else
+    false;
+#endif
+    return use_epoll;
+}
 
 }  // namespace engine::io
 

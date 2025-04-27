@@ -63,6 +63,12 @@ impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {
     return context;
 }
 
+impl::TaskContext* TaskQueue::DoPopNonblocking(moodycamel::ConsumerToken& token) {
+    impl::TaskContext* context = nullptr;
+    queue_.try_dequeue(token, context);
+    return context;
+}
+
 }  // namespace engine
 
 USERVER_NAMESPACE_END

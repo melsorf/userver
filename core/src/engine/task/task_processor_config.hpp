@@ -38,6 +38,8 @@ struct TaskProcessorConfig {
     std::size_t task_trace_max_csw{0};
     std::string task_trace_logger_name;
 
+    bool use_epoll_mode{true};
+
     void SetName(const std::string& new_name);
 };
 

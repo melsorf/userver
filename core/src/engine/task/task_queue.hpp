@@ -34,6 +34,8 @@ private:
 
     impl::TaskContext* DoPopBlocking(moodycamel::ConsumerToken& token);
 
+    impl::TaskContext* DoPopNonblocking(moodycamel::ConsumerToken& token);
+
     moodycamel::ConcurrentQueue<impl::TaskContext*> queue_;
     moodycamel::LightweightSemaphore queue_semaphore_;
 };

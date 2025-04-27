@@ -17,6 +17,7 @@
 
 #include <engine/task/counted_coroutine_ptr.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor_epoll.hpp>
 #include <engine/task/task_processor_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -101,6 +102,9 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
       config_(std::move(config)),
       pools_(std::move(pools)) {
     utils::impl::FinishStaticRegistration();
+    if (config_.use_epoll_mode) {
+        EnableEpollMode(true);
+    }
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
                    << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
@@ -165,7 +169,11 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
 
     SetTaskQueueWaitTimepoint(context);
 
-    std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
+    std::visit([&context](auto&& arg) { return arg.DoPush(context); }, task_queue_);
+
+    if (use_epoll_mode_.load() && epoll_support_) {
+        epoll_support_->SignalNewTasks();
+    }
 }
 
 void TaskProcessor::Adopt(impl::TaskContext& context) { detached_contexts_->Add(context); }
@@ -301,8 +309,22 @@ void TaskProcessor::FinalizeWorkerThread() noexcept { pools_->GetCoroPool().Clea
 
 void TaskProcessor::ProcessTasks() noexcept {
     while (true) {
-        auto context = std::visit([](auto&& arg) { return arg.PopBlocking(); }, task_queue_);
-        if (!context) break;
+        boost::intrusive_ptr<impl::TaskContext> context;
+    
+        if (use_epoll_mode_.load() && epoll_support_) {
+            // Use epoll mode
+            context = epoll_support_->WaitForTasksAndEvents(true);
+            if (!context) {
+                // This might happen when interrupted or when shutting down
+                // Try standard PopBlocking once more
+                context = std::visit([](auto&& arg) { return arg.PopBlocking(); }, task_queue_);
+                if (!context) break;
+            }
+        } else {
+            // Use standard blocking pop
+            context = std::visit([](auto&& arg) { return arg.PopBlocking(); }, task_queue_);
+            if (!context) break;
+        }
 
         CheckWaitTime(*context);
 
@@ -430,6 +452,31 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
     }
     return new_overload_by_length;
 }
+
+void TaskProcessor::EnableEpollMode(bool enable) {
+    if (enable && !epoll_support_) {
+      epoll_support_ = std::make_unique<TaskProcessorEpoll>(*this);
+      epoll_support_->Initialize();
+    }
+    
+    use_epoll_mode_.store(enable && epoll_support_ != nullptr);
+    LOG_INFO() << "TaskProcessor '" << Name() << "' epoll mode " 
+               << (IsEpollModeEnabled() ? "enabled" : "disabled");
+  }
+  
+  boost::intrusive_ptr<impl::TaskContext> TaskProcessor::TryGetTask() {
+    boost::intrusive_ptr<impl::TaskContext> context;
+    
+    // Try to get a task without blocking
+    std::visit([&context](auto&& arg) {
+      thread_local moodycamel::ConsumerToken token(arg.queue_);
+      context = boost::intrusive_ptr<impl::TaskContext>{
+          arg.DoPopNonblocking(token),
+          /* add_ref= */ false};
+    }, task_queue_);
+    
+    return context;
+  }
 
 }  // namespace engine
 

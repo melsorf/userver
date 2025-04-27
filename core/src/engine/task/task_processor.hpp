@@ -10,6 +10,7 @@
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
+#include <engine/io/epoll_poller.hpp>
 #include <engine/task/task_counter.hpp>
 #include <engine/task/task_processor_config.hpp>
 #include <engine/task/task_queue.hpp>
@@ -76,6 +77,11 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+    void EnableEpollMode(bool enable);
+    bool IsEpollModeEnabled() const { return use_epoll_mode_.load(); }
+  
+    TaskProcessorEpoll* GetEpollSupport() { return epoll_support_.get(); }
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -98,6 +104,8 @@ private:
     void SetTaskQueueWaitTimeOverloaded(bool new_value) noexcept;
 
     void HandleOverload(impl::TaskContext& context, TaskProcessorSettings::OverloadAction);
+
+    boost::intrusive_ptr<impl::TaskContext> TryGetTask();
 
     OverloadByLength GetOverloadByLength(std::size_t max_queue_length) noexcept;
 
@@ -126,6 +134,9 @@ private:
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
+
+    std::unique_ptr<TaskProcessorEpoll> epoll_support_;
+    std::atomic<bool> use_epoll_mode_{false};
 };
 
 /// Register a function that runs on all threads on task processor creation.
