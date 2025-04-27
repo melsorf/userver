@@ -215,7 +215,7 @@ void FdPoller::Reset(int fd, Kind kind) {
                 if (task_processor->IsEpollModeEnabled()) {
                     auto* epoll_support = task_processor->GetEpollSupport();
                     if (epoll_support) {
-                        RegisterWithEpoll(epoll_support);
+                        RegisterWithEpoll(epoll_support->GetEpollPoller());
                     }
                 }
             }

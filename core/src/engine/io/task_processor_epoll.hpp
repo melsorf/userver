@@ -43,6 +43,8 @@ public:
   /// Signal that there are new tasks
   void SignalNewTasks();
 
+  io::EpollPoller* GetEpollPoller() const { return epoll_.get(); }
+
 private:
   static constexpr unsigned kSpinningIterations = 4000;
 
