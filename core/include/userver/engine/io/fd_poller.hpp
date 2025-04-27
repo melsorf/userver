@@ -20,6 +20,10 @@ namespace engine::ev {
 class ThreadControl;
 }
 
+namespace engine {
+    class TaskProcessorEpoll;
+}
+
 namespace engine::io {
 
 class EpollPoller;
@@ -96,7 +100,7 @@ public:
 
 private:
     friend class impl::Direction;
-    friend class TaskProcessorEpoll;
+    friend class engine::TaskProcessorEpoll;
 
     enum class State : int {
         kInvalid,
