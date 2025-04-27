@@ -5,6 +5,9 @@
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
 #include <engine/io/epoll_poller.hpp>
+#include <userver/logging/log.hpp>
+#include <userver/engine/task/current_task.hpp>
+#include <engine/task/task_processor.hpp> 
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -207,9 +210,11 @@ void FdPoller::Reset(int fd, Kind kind) {
     // If epoll mode is enabled, register with the current task processor's epoll
     if (ShouldUseEpollMode()) {
         try {
-            if (auto* task_processor = engine::current_task::GetTaskProcessorOptional()) {
+            auto* task_processor = engine::current_task::GetTaskProcessorOptional();
+            if (task_processor) {
                 if (task_processor->IsEpollModeEnabled()) {
-                    if (auto* epoll_support = task_processor->GetEpollSupport(); epoll_support) {
+                    auto* epoll_support = task_processor->GetEpollSupport();
+                    if (epoll_support) {
                         RegisterWithEpoll(epoll_support);
                     }
                 }

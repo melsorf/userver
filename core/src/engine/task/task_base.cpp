@@ -151,10 +151,13 @@ TaskProcessor& GetTaskProcessor() { return GetCurrentTaskContext().GetTaskProces
 
 TaskProcessor* GetTaskProcessorOptional() noexcept {
     try {
-        return &GetTaskProcessor();
+        if (IsTaskProcessorThread()) {
+            return &GetTaskProcessor();
+        }
     } catch (const std::exception&) {
-        return nullptr;
+        // Ignore exceptions, we are not in a task processor thread
     }
+    return nullptr;
 }
 
 std::size_t GetStackSize() { return GetTaskProcessor().GetTaskProcessorPools()->GetCoroPool().GetStackSize(); }
