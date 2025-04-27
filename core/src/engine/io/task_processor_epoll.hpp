@@ -6,6 +6,8 @@
 
 #include <engine/io/epoll_poller.hpp>
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {

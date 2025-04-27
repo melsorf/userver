@@ -96,7 +96,7 @@ public:
 
 private:
     friend class impl::Direction;
-    friend class EpollPoller;
+    friend class TaskProcessorEpoll;
 
     enum class State : int {
         kInvalid,
