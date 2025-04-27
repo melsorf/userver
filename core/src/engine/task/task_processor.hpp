@@ -24,6 +24,8 @@ USERVER_NAMESPACE_BEGIN
 
 namespace engine {
 
+class TaskProcessorEpoll;
+
 namespace impl {
 class TaskContext;
 class TaskProcessorPools;
