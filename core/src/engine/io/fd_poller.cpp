@@ -5,6 +5,7 @@
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
 #include <engine/io/epoll_poller.hpp>
+#include <engine/io/task_processor_epoll.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/engine/task/current_task.hpp>
 #include <engine/task/task_processor.hpp> 
