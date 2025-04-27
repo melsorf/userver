@@ -84,6 +84,8 @@ public:
   
     TaskProcessorEpoll* GetEpollSupport() { return epoll_support_.get(); }
 
+    boost::intrusive_ptr<impl::TaskContext> TryGetTask();
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -106,8 +108,6 @@ private:
     void SetTaskQueueWaitTimeOverloaded(bool new_value) noexcept;
 
     void HandleOverload(impl::TaskContext& context, TaskProcessorSettings::OverloadAction);
-
-    boost::intrusive_ptr<impl::TaskContext> TryGetTask();
 
     OverloadByLength GetOverloadByLength(std::size_t max_queue_length) noexcept;
 

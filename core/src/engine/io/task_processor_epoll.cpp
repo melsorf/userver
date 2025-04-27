@@ -4,6 +4,8 @@
 #include <unistd.h>
 
 #include <engine/task/task_processor.hpp>
+#include <engine/task/task_context.hpp>
+#include <userver/engine/io/fd_poller.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 
