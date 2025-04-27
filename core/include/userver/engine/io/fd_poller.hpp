@@ -96,6 +96,7 @@ public:
 
 private:
     friend class impl::Direction;
+    friend class EpollPoller;
 
     enum class State : int {
         kInvalid,
