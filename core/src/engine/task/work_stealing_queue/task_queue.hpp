@@ -19,6 +19,7 @@ class TaskContext;
 
 class WorkStealingTaskQueue final {
     friend class Consumer;
+    class TaskProcessor;
 
 public:
     explicit WorkStealingTaskQueue(const TaskProcessorConfig& config);

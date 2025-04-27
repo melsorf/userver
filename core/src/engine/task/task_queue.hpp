@@ -14,6 +14,8 @@ namespace impl {
 class TaskContext;
 }  // namespace impl
 
+class TaskProcessor;
+
 class TaskQueue final {
 public:
     explicit TaskQueue(const TaskProcessorConfig& config);
@@ -30,6 +32,8 @@ public:
     void PrepareWorker(std::size_t index);
 
 private:
+    friend class TaskProcessor;
+
     void DoPush(impl::TaskContext* context);
 
     impl::TaskContext* DoPopBlocking(moodycamel::ConsumerToken& token);
