@@ -201,7 +201,25 @@ std::optional<FdPoller::Kind> FdPoller::GetReady() noexcept {
 
 engine::impl::ContextAccessor* FdPoller::TryGetContextAccessor() noexcept { return &*pimpl_; }
 
-void FdPoller::Reset(int fd, Kind kind) { pimpl_->Reset(fd, kind); }
+void FdPoller::Reset(int fd, Kind kind) {
+    pimpl_->Reset(fd, kind);
+
+    // If epoll mode is enabled, register with the current task processor's epoll
+    if (ShouldUseEpollMode()) {
+        try {
+            if (auto* task_processor = engine::current_task::GetTaskProcessorOptional()) {
+                if (task_processor->IsEpollModeEnabled()) {
+                    if (auto* epoll_support = task_processor->GetEpollSupport(); epoll_support) {
+                        RegisterWithEpoll(epoll_support);
+                    }
+                }
+            }
+        } catch (const std::exception& ex) {
+            LOG_DEBUG() << "Failed to register with epoll: " << ex;
+            // Continue without epoll registration
+        }
+    }
+}
 
 void FdPoller::Invalidate() { pimpl_->Invalidate(); }
 
@@ -231,16 +249,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind) {
     watcher_.Set(fd, GetEvMode(kind));
     state_ = State::kReadyToUse;
 
-    // If we're on a TaskProcessor thread with epoll mode enabled, register with it
-    if (FdPoller::ShouldUseEpollMode()) {
-        if (auto* task_processor = engine::current_task::GetTaskProcessorOptional()) {
-            if (task_processor->IsEpollModeEnabled()) {
-                if (auto* epoll_support = task_processor->GetEpollSupport()) {
-                    static_cast<FdPoller*>(this->owner_)->RegisterWithEpoll(epoll_support);
-                }
-            }
-        }
-    }
+    // Store the kind for future epoll registration
+    events_that_happened_.store(kind, std::memory_order_relaxed);
 }
 
 void FdPoller::ResetReady() noexcept { pimpl_->ResetReady(); }

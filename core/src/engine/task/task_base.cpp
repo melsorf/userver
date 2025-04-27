@@ -149,6 +149,14 @@ bool IsTaskProcessorThread() noexcept { return GetCurrentTaskContextUnchecked() 
 
 TaskProcessor& GetTaskProcessor() { return GetCurrentTaskContext().GetTaskProcessor(); }
 
+TaskProcessor* GetTaskProcessorOptional() noexcept {
+    try {
+        return &GetTaskProcessor();
+    } catch (const std::exception&) {
+        return nullptr;
+    }
+}
+
 std::size_t GetStackSize() { return GetTaskProcessor().GetTaskProcessorPools()->GetCoroPool().GetStackSize(); }
 
 ev::ThreadControl& GetEventThread() { return GetTaskProcessor().EventThreadPool().NextThread(); }
