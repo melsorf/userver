@@ -59,7 +59,7 @@ struct EpollPoller::Impl {
   std::unordered_map<int, void*> fd_to_user_data_;
 };
 
-EpollPoller::EpollPoller() : impl_({}) {
+EpollPoller::EpollPoller() {
   // Create epoll instance
   impl_->epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
   if (impl_->epoll_fd_ < 0) {
