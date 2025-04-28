@@ -454,6 +454,11 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 }
 
 void TaskProcessor::EnableEpollMode(bool enable) {
+    bool is_task_queue = std::holds_alternative<TaskQueue>(task_queue_);
+    if (!is_task_queue) {
+        LOG_WARNING() << "EPOLLET mode is only supported with TaskQueue, not with WorkStealingTaskQueue";
+        enable = false;
+    }
     if (enable && !epoll_support_) {
       epoll_support_ = std::make_unique<TaskProcessorEpoll>(*this);
       epoll_support_->Initialize();
