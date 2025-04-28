@@ -470,18 +470,16 @@ void TaskProcessor::EnableEpollMode(bool enable) {
   }
   
   boost::intrusive_ptr<impl::TaskContext> TaskProcessor::TryGetTask() {
-    boost::intrusive_ptr<impl::TaskContext> context;
+    if (auto* task_queue = std::get_if<TaskQueue>(&task_queue_)) {
+        thread_local moodycamel::ConsumerToken token(task_queue->queue_);
+        return boost::intrusive_ptr<impl::TaskContext>{
+            task_queue->DoPopNonblocking(token),
+            /* add_ref= */ false
+        };
+    }
     
-    // Try to get a task without blocking
-    std::visit([&context](auto&& arg) {
-      thread_local moodycamel::ConsumerToken token(arg.queue_);
-      context = boost::intrusive_ptr<impl::TaskContext>{
-          arg.DoPopNonblocking(token),
-          /* add_ref= */ false};
-    }, task_queue_);
-    
-    return context;
-  }
+    return nullptr;
+}
 
 }  // namespace engine
 
