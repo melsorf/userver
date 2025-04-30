@@ -106,8 +106,8 @@ private:
         }
 
         PerThreadEpollState() = default;
-        PerThreadEpollState(PerThreadEpollState&&) noexcept = default;
-        PerThreadEpollState& operator=(PerThreadEpollState&&) noexcept = default;
+        PerThreadEpollState(PerThreadEpollState&&) noexcept = delete;
+        PerThreadEpollState& operator=(PerThreadEpollState&&) noexcept = delete;
         // Non-copyable
         PerThreadEpollState(const PerThreadEpollState&) = delete;
         PerThreadEpollState& operator=(const PerThreadEpollState&) = delete;
