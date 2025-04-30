@@ -19,6 +19,12 @@
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_processor_pools.hpp>
 
+#ifdef __linux__
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#endif
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {
@@ -41,6 +47,44 @@ constexpr OverloadActionAndValue<OverloadBitAndValue> GetOverloadActionAndValue(
         return {TaskProcessorSettings::OverloadAction::kCancel, value};
     }
 }
+
+auto MakeTaskQueue(TaskProcessorConfig config) {
+    using ResultType = std::variant<TaskQueue, WorkStealingTaskQueue>;
+    // Force TaskQueue if epoll integration is enabled, as work-stealing is not yet supported
+#ifdef __linux__
+    if (config.use_epoll_io_poller) {
+        if (config.task_processor_queue == TaskQueueType::kWorkStealingTaskQueue) {
+             LOG_WARNING() << "WorkStealingTaskQueue is not supported with use_epoll_io_poller=true, forcing GlobalTaskQueue.";
+        }
+        return ResultType{std::in_place_index<0>, std::move(config)};
+    }
+#endif
+    switch (config.task_processor_queue) {
+        case TaskQueueType::kGlobalTaskQueue:
+            return ResultType{std::in_place_index<0>, std::move(config)};
+        case TaskQueueType::kWorkStealingTaskQueue:
+            return ResultType{std::in_place_index<1>, std::move(config)};
+    }
+    UINVARIANT(false, "Unexpected value of TaskQueueType enum");
+}
+
+#ifdef __linux__
+// Constants for epoll
+constexpr int kMaxEpollEvents = 16; // Max events to process per epoll_wait call
+constexpr uint64_t kEventFdSignalValue = 1;
+
+// Helper to get current thread index
+std::optional<std::size_t> GetCurrentWorkerIndex(const std::string& expected_prefix) {
+    std::string current_name = utils::GetCurrentThreadName();
+    if (current_name.rfind(expected_prefix, 0) == 0) {
+        try {
+            return std::stoull(current_name.substr(expected_prefix.length()));
+        } catch (...) {
+        }
+    }
+    return std::nullopt;
+}
+#endif
 
 void SetTaskQueueWaitTimepoint(impl::TaskContext* context) {
     static constexpr std::size_t kTaskTimestampInterval = 4;
@@ -99,18 +143,27 @@ TaskProcessor::TaskProcessor(TaskProcessorConfig config, std::shared_ptr<impl::T
     : task_queue_(MakeTaskQueue(config)),
       task_counter_(config.worker_threads),
       config_(std::move(config)),
-      pools_(std::move(pools)) {
+      pools_(std::move(pools))
+#ifdef __linux__
+      , epoll_states_(config_.use_epoll_io_poller ? config_.worker_threads : 0),
+      worker_states_(config_.use_epoll_io_poller ? config_.worker_threads : 0)
+#endif
+       {
     utils::impl::FinishStaticRegistration();
     try {
         LOG_INFO() << "creating task_processor " << Name() << " "
-                   << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name;
+                   << "worker_threads=" << config_.worker_threads << " thread_name=" << config_.thread_name
+#ifdef __linux__
+                   << " use_epoll_io_poller=" << config_.use_epoll_io_poller
+#endif
+                   ;
         concurrent::impl::Latch workers_left{static_cast<std::ptrdiff_t>(config_.worker_threads)};
         workers_.reserve(config_.worker_threads);
         for (std::size_t i = 0; i < config_.worker_threads; ++i) {
             workers_.emplace_back([this, i, &workers_left] {
                 PrepareWorkerThread(i);
                 workers_left.count_down();
-                ProcessTasks();
+                ProcessTasks(i);
                 FinalizeWorkerThread();
             });
         }
@@ -133,6 +186,18 @@ void TaskProcessor::Cleanup() noexcept {
 
     std::visit([](auto&& arg) { return arg.StopProcessing(); }, task_queue_);
 
+#ifdef __linux__
+    // Wake up any epoll-waiting threads
+    if (config_.use_epoll_io_poller) {
+        for (auto& state : epoll_states_) {
+            if (state.task_event_fd != -1) {
+                uint64_t val = kEventFdSignalValue;
+                [[maybe_unused]] auto res = ::write(state.task_event_fd, &val, sizeof(val));
+            }
+        }
+    }
+#endif
+
     for (auto& w : workers_) {
         w.join();
     }
@@ -144,6 +209,38 @@ void TaskProcessor::InitiateShutdown() {
     is_shutting_down_ = true;
     detached_contexts_->RequestCancellation(TaskCancellationReason::kShutdown);
 }
+
+#ifdef __linux__
+bool TaskProcessor::TrySignalIdleWorker() {
+    static std::atomic<std::size_t> next_worker_idx{0};
+    std::size_t attempts = 0;
+    const std::size_t num_workers = config_.worker_threads;
+
+    while (attempts < num_workers) {
+        std::size_t current_idx = next_worker_idx.fetch_add(1) % num_workers;
+        WorkerState expected_idle = WorkerState::kIdle;
+        WorkerState expected_spinning = WorkerState::kSpinning;
+        WorkerState expected_sleeping = WorkerState::kSleeping;
+
+        // Spinning > sleeping
+        if (worker_states_[current_idx].compare_exchange_strong(expected_spinning, WorkerState::kRunning) ||
+            worker_states_[current_idx].compare_exchange_strong(expected_sleeping, WorkerState::kRunning))
+        {
+            if (epoll_states_[current_idx].task_event_fd != -1) {
+                uint64_t val = kEventFdSignalValue;
+                [[maybe_unused]] auto res = ::write(epoll_states_[current_idx].task_event_fd, &val, sizeof(val));
+                LOG_TRACE() << "Signalled worker " << current_idx << " via eventfd";
+                return true;
+            }
+            // If fd is bad, try next worker
+        }
+        attempts++;
+    }
+
+    LOG_TRACE() << "No idle or sleeping worker found to signal";
+    return false;
+}
+#endif
 
 void TaskProcessor::Schedule(impl::TaskContext* context) {
     UASSERT(context);
@@ -166,6 +263,15 @@ void TaskProcessor::Schedule(impl::TaskContext* context) {
     SetTaskQueueWaitTimepoint(context);
 
     std::visit([&context](auto&& arg) { return arg.Push(context); }, task_queue_);
+
+#ifdef __linux__
+    // If using epoll, try to wake up a specific idle/sleeping worker
+    if (config_.use_epoll_io_poller) {
+        TrySignalIdleWorker();
+        // If no idle worker was signaled, the task will be picked up eventually
+        // by a worker finishing its current task or waking from epoll_wait.
+    }
+#endif
 }
 
 void TaskProcessor::Adopt(impl::TaskContext& context) { detached_contexts_->Add(context); }
@@ -294,10 +400,187 @@ void TaskProcessor::PrepareWorkerThread(std::size_t index) noexcept {
 
     pools_->GetCoroPool().RegisterThread();
 
+#ifdef __linux__
+    // Initialize epoll state if enabled
+    if (config_.use_epoll_io_poller) {
+        UASSERT(index < epoll_states_.size());
+        UASSERT(index < worker_states_.size());
+
+        worker_states_[index].store(WorkerState::kIdle); // Initial state
+
+        auto& state = epoll_states_[index];
+        state.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+        if (state.epoll_fd == -1) {
+            LOG_ERROR() << "Failed to create epoll fd for worker " << index << ": " << strerror(errno);
+            // How to handle this? Maybe fall back?
+            return;
+        }
+
+        state.task_event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (state.task_event_fd == -1) {
+            LOG_ERROR() << "Failed to create eventfd for worker " << index << ": " << strerror(errno);
+             ::close(state.epoll_fd);
+             state.epoll_fd = -1;
+             return;
+        }
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET;
+        ev.data.fd = state.task_event_fd; // Associate event with task_event_fd
+        if (epoll_ctl(state.epoll_fd, EPOLL_CTL_ADD, state.task_event_fd, &ev) == -1) {
+            LOG_ERROR() << "Failed to add eventfd to epoll for worker " << index << ": " << strerror(errno);
+            ::close(state.epoll_fd);
+            ::close(state.task_event_fd);
+            state.epoll_fd = -1;
+            state.task_event_fd = -1;
+            return;
+        }
+         LOG_DEBUG() << "Worker " << index << " initialized epoll_fd=" << state.epoll_fd << ", task_event_fd=" << state.task_event_fd;
+    }
+#endif
+
     TaskProcessorThreadStartedHook();
 }
 
 void TaskProcessor::FinalizeWorkerThread() noexcept { pools_->GetCoroPool().ClearLocalCache(); }
+
+void TaskProcessor::ProcessTasks(std::size_t worker_index) noexcept {
+#ifdef __linux__
+    if (config_.use_epoll_io_poller && epoll_states_[worker_index].epoll_fd != -1) {
+        ProcessTasksEpoll(worker_index);
+    } else {
+        ProcessTasks();
+    }
+#else
+    ProcessTasks();
+#endif
+}
+
+#ifdef __linux__
+// Epoll-based worker loop
+void TaskProcessor::ProcessTasksEpoll(std::size_t worker_index) noexcept {
+    LOG_DEBUG() << "Worker " << worker_index << " starting epoll processing loop.";
+    auto& state = epoll_states_[worker_index];
+    auto& worker_state = worker_states_[worker_index];
+    struct epoll_event events[kMaxEpollEvents];
+    TaskQueue& task_queue = std::get<TaskQueue>(task_queue_);
+
+    while (true) {
+        boost::intrusive_ptr<impl::TaskContext> context{nullptr};
+
+        // 1. Spinning
+        worker_state.store(WorkerState::kSpinning);
+        for (std::size_t i = 0; i < config_.epoll_spinning_iterations; ++i) {
+            context = task_queue.PopNonBlocking();
+            if (context) break;
+             // cpu relaxation like _mm_pause() here?
+        }
+        worker_state.store(WorkerState::kIdle); // Back to idle before potential sleep
+
+        // 2. Process Task if found during spin
+        if (context) {
+             if (!context) break; // Check for stop signal
+             worker_state.store(WorkerState::kRunning);
+             // Process task - same logic as legacy
+             CheckWaitTime(*context);
+             bool has_failed = false;
+             try {
+                 impl::TaskCounter::RunningToken token{GetTaskCounter()};
+                 context->DoStep();
+             } catch (const std::exception& ex) {
+                 LOG_ERROR() << "uncaught exception from DoStep: " << ex;
+                 has_failed = true;
+             }
+             pools_->GetCoroPool().AccountStackUsage();
+             if (has_failed || context->IsFinished()) {
+                 context->FinishDetached();
+             }
+             worker_state.store(WorkerState::kIdle); // Task finished, back to idle
+             continue; // Loop again to check for more tasks immediately
+        }
+
+        // 3. Epoll Wait Phase
+        LOG_TRACE() << "Worker " << worker_index << " entering epoll_wait.";
+        worker_state.store(WorkerState::kSleeping); 
+        int n_events = epoll_wait(state.epoll_fd, events, kMaxEpollEvents, -1); 
+        worker_state.store(WorkerState::kRunning);
+        LOG_TRACE() << "Worker " << worker_index << " woke up from epoll_wait with " << n_events << " events.";
+
+
+        if (n_events == -1) {
+            if (errno == EINTR) continue; // Interrupted by signal, just retry
+            LOG_ERROR() << "epoll_wait failed for worker " << worker_index << ": " << strerror(errno);
+            break;
+        }
+
+        bool task_found_in_epoll = false;
+        for (int i = 0; i < n_events; ++i) {
+            int fd = events[i].data.fd;
+            uint32_t revents = events[i].events;
+
+            if (fd == state.task_event_fd) {
+                // Task notification
+                uint64_t value;
+                // Read from eventfd to reset it
+                [[maybe_unused]] auto res = ::read(fd, &value, sizeof(value));
+                // Even if read fails (EAGAIN), the event was signaled. Try popping.
+                LOG_TRACE() << "Worker " << worker_index << " received task notification via eventfd.";
+
+                // Try to pop tasks until queue is empty
+                while(true) {
+                     context = task_queue.PopNonBlocking();
+                     if (!context) break; // No more tasks for now
+                     task_found_in_epoll = true; // Mark that we got a task this cycle
+
+                     // Check for stop signal
+                     if (!context) {
+                         LOG_DEBUG() << "Worker " << worker_index << " received stop signal.";
+                         worker_state.store(WorkerState::kIdle);
+                         return;
+                     }
+
+                     // Process the task
+                     CheckWaitTime(*context);
+                     bool has_failed = false;
+                     try {
+                         impl::TaskCounter::RunningToken token{GetTaskCounter()};
+                         context->DoStep();
+                     } catch (const std::exception& ex) {
+                         LOG_ERROR() << "uncaught exception from DoStep: " << ex;
+                         has_failed = true;
+                     }
+                     pools_->GetCoroPool().AccountStackUsage();
+                     if (has_failed || context->IsFinished()) {
+                         context->FinishDetached();
+                     }
+                }
+            } else {
+                // I/O event
+                LOG_TRACE() << "Worker " << worker_index << " received IO event for fd=" << fd;
+                impl::TaskContext* io_context = nullptr;
+                {
+                    // Find the task associated with this fd
+                    std::lock_guard lock(state.fd_map_mutex);
+                    auto it = state.fd_map.find(fd);
+                    if (it != state.fd_map.end()) {
+                        io_context = it->second;
+                    } else {
+                         LOG_WARNING() << "Worker " << worker_index << " received epoll event for unknown fd=" << fd;
+                    }
+                }
+
+                if (io_context) {
+                    // Wake up the task.
+                    io_context->Wakeup(impl::TaskContext::WakeupSource::kIoWait);
+                }
+            }
+        }
+        worker_state.store(WorkerState::kIdle);
+
+    } 
+     LOG_DEBUG() << "Worker " << worker_index << " exiting epoll processing loop.";
+}
+#endif // __linux__
 
 void TaskProcessor::ProcessTasks() noexcept {
     while (true) {
@@ -430,6 +713,91 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
     }
     return new_overload_by_length;
 }
+
+#ifdef __linux__
+// Add fd to the current worker's epoll set
+bool TaskProcessor::StartEpollPolling(int fd, impl::TaskContext* context, int epoll_events) {
+    if (!config_.use_epoll_io_poller) return false;
+
+    auto worker_index_opt = GetCurrentWorkerIndex(config_.thread_name + "_");
+    if (!worker_index_opt) {
+        LOG_ERROR() << "Could not determine worker index in StartEpollPolling";
+        return false;
+    }
+    std::size_t worker_index = *worker_index_opt;
+
+    UASSERT(worker_index < epoll_states_.size());
+    auto& state = epoll_states_[worker_index];
+    if (state.epoll_fd == -1) return false; // Epoll not initialized for this worker
+
+    struct epoll_event ev;
+    ev.events = epoll_events | EPOLLET | EPOLLONESHOT;
+    ev.data.fd = fd;
+
+    LOG_TRACE() << "Worker " << worker_index << " adding fd=" << fd << " to epoll_fd=" << state.epoll_fd;
+
+    {
+        std::lock_guard lock(state.fd_map_mutex);
+        state.fd_map[fd] = context;
+    }
+
+    if (epoll_ctl(state.epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+        // If it already exists (EEXIST), maybe modify? For ONESHOT, ADD might be okay.
+        // If ADD fails, remove from map.
+        if (errno == EEXIST) {
+             LOG_TRACE() << "fd=" << fd << " already exists in epoll set, attempting MOD";
+             if (epoll_ctl(state.epoll_fd, EPOLL_CTL_MOD, fd, &ev) == -1) {
+                 LOG_ERROR() << "Failed to MOD fd=" << fd << " in epoll for worker " << worker_index << ": " << strerror(errno);
+                 std::lock_guard lock(state.fd_map_mutex);
+                 state.fd_map.erase(fd);
+                 return false;
+             }
+        } else {
+            LOG_ERROR() << "Failed to ADD fd=" << fd << " to epoll for worker " << worker_index << ": " << strerror(errno);
+            std::lock_guard lock(state.fd_map_mutex);
+            state.fd_map.erase(fd);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Remove fd from the current worker's epoll set
+bool TaskProcessor::StopEpollPolling(int fd) {
+    if (!config_.use_epoll_io_poller) return false;
+
+   // Find current worker index
+   auto worker_index_opt = GetCurrentWorkerIndex(config_.thread_name + "_");
+    if (!worker_index_opt) {
+        LOG_ERROR() << "Could not determine worker index in StopEpollPolling";
+        return false;
+    }
+   std::size_t worker_index = *worker_index_opt;
+
+
+   UASSERT(worker_index < epoll_states_.size());
+   auto& state = epoll_states_[worker_index];
+   if (state.epoll_fd == -1) return false; // Epoll not initialized
+
+   LOG_TRACE() << "Worker " << worker_index << " removing fd=" << fd << " from epoll_fd=" << state.epoll_fd;
+
+   // Remove from epoll first. Ignore errors (e.g., fd already removed).
+   if (epoll_ctl(state.epoll_fd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+       // ENOENT (No such file or directory) is expected if already removed or closed.
+       if (errno != ENOENT) {
+            LOG_WARNING() << "Failed to DEL fd=" << fd << " from epoll for worker " << worker_index << ": " << strerror(errno);
+            // Continue to remove from map anyway
+       }
+   }
+
+   // Remove from map
+   {
+       std::lock_guard lock(state.fd_map_mutex);
+       state.fd_map.erase(fd);
+   }
+   return true;
+}
+#endif // __linux__
 
 }  // namespace engine
 

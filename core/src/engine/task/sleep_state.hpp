@@ -17,6 +17,7 @@ enum class SleepFlags : std::uint32_t {
     kWakeupByBootstrap = 1 << 4,
     kSleeping = 1 << 5,
     kNonCancellable = 1 << 6,
+    kWakeupByIoWait = 1 << 7,
 };
 
 // Without alignas(std::uint64_t) clang generates inefficient code with function

@@ -76,6 +76,13 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+    #ifdef __linux__
+    bool UseEpollPolling() const noexcept { return config_.use_epoll_io_poller; }
+    
+    bool StartEpollPolling(int fd, impl::TaskContext* context, int epoll_events);
+    bool StopEpollPolling(int fd);
+#endif
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -85,6 +92,35 @@ private:
         std::atomic<OverloadByLength> overload_by_length{0};
     };
 
+#ifdef __linux__
+
+    struct PerThreadEpollState {
+        int epoll_fd = -1;
+        int task_event_fd = -1;
+        std::mutex fd_map_mutex;
+        // Maps polled fd to the TaskContext waiting on it
+        std::unordered_map<int, impl::TaskContext*> fd_map;
+
+        ~PerThreadEpollState() {
+            if (epoll_fd != -1) ::close(epoll_fd);
+            if (task_event_fd != -1) ::close(task_event_fd);
+        }
+
+        PerThreadEpollState() = default;
+        PerThreadEpollState(PerThreadEpollState&&) noexcept = delete;
+        PerThreadEpollState& operator=(PerThreadEpollState&&) noexcept = delete;
+        // Non-copyable
+        PerThreadEpollState(const PerThreadEpollState&) = delete;
+        PerThreadEpollState& operator=(const PerThreadEpollState&) = delete;
+    };
+    // Worker thread states for targeted wakeups
+    enum class WorkerState { kIdle, kSpinning, kRunning, kSleeping };
+    std::vector<PerThreadEpollState> epoll_states_;
+    std::vector<std::atomic<WorkerState>> worker_states_;
+
+    bool TrySignalIdleWorker();
+#endif
+
     void Cleanup() noexcept;
 
     void PrepareWorkerThread(std::size_t index) noexcept;
@@ -92,6 +128,14 @@ private:
     void FinalizeWorkerThread() noexcept;
 
     void ProcessTasks() noexcept;
+
+    // Main worker loop - chooses between epoll and legacy based on config
+    void ProcessTasks(std::size_t worker_index) noexcept;
+
+#ifdef __linux__
+    // Epoll-based worker loop
+    void ProcessTasksEpoll(std::size_t worker_index) noexcept;
+#endif
 
     void CheckWaitTime(impl::TaskContext& context);
 

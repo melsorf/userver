@@ -11,7 +11,8 @@ constexpr std::size_t kSemaphoreInitialCount = 0;
 }
 
 TaskQueue::TaskQueue(const TaskProcessorConfig& config)
-    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations) {}
+    : queue_semaphore_(kSemaphoreInitialCount, config.spinning_iterations),
+    spinning_iterations_(config.spinning_iterations) {}
 
 void TaskQueue::Push(boost::intrusive_ptr<impl::TaskContext>&& context) {
     UASSERT(context);
@@ -33,6 +34,15 @@ boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopBlocking() {
         DoPush(nullptr);
     }
 
+    return context;
+}
+
+boost::intrusive_ptr<impl::TaskContext> TaskQueue::PopNonBlocking() {
+    thread_local moodycamel::ConsumerToken token(queue_);
+    boost::intrusive_ptr<impl::TaskContext> context{
+        DoPopNonBlocking(token),
+        /* add_ref= */ false};
+    // Don't put back stop token in non-blocking mode
     return context;
 }
 
@@ -61,6 +71,14 @@ impl::TaskContext* TaskQueue::DoPopBlocking(moodycamel::ConsumerToken& token) {
     }
 
     return context;
+}
+
+impl::TaskContext* TaskQueue::DoPopNonBlocking(moodycamel::ConsumerToken& token) {
+    impl::TaskContext* context = nullptr;
+    if (queue_.try_dequeue(token, context)) {
+        return context;
+    }
+    return nullptr; // Queue was empty
 }
 
 }  // namespace engine

@@ -23,6 +23,8 @@ public:
     // Returns nullptr as a stop signal
     boost::intrusive_ptr<impl::TaskContext> PopBlocking();
 
+    boost::intrusive_ptr<impl::TaskContext> PopNonBlocking();
+
     void StopProcessing();
 
     std::size_t GetSizeApproximate() const noexcept;
@@ -33,9 +35,11 @@ private:
     void DoPush(impl::TaskContext* context);
 
     impl::TaskContext* DoPopBlocking(moodycamel::ConsumerToken& token);
+    impl::TaskContext* DoPopNonBlocking(moodycamel::ConsumerToken& token);
 
     moodycamel::ConcurrentQueue<impl::TaskContext*> queue_;
     moodycamel::LightweightSemaphore queue_semaphore_;
+    const std::size_t spinning_iterations_; 
 };
 
 }  // namespace engine
