@@ -111,7 +111,7 @@ private:
         // Non-copyable
         PerThreadEpollState(const PerThreadEpollState&) = delete;
         PerThreadEpollState& operator=(const PerThreadEpollState&) = delete;
-    }
+    };
     // Worker thread states for targeted wakeups
     enum class WorkerState { kIdle, kSpinning, kRunning, kSleeping };
     std::vector<PerThreadEpollState> epoll_states_;
