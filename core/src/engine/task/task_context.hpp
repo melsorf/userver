@@ -78,6 +78,7 @@ public:
         kDeadlineTimer = static_cast<uint32_t>(SleepFlags::kWakeupByDeadlineTimer),
         kCancelRequest = static_cast<uint32_t>(SleepFlags::kWakeupByCancelRequest),
         kBootstrap = static_cast<uint32_t>(SleepFlags::kWakeupByBootstrap),
+        kIoWait = static_cast<uint32_t>(SleepFlags::kWakeupByIoWait),
     };
 
     TaskContext(TaskProcessor&, Task::Importance, Task::WaitMode, Deadline, utils::impl::WrappedCallBase& payload);

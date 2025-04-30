@@ -4,6 +4,12 @@
 #include <engine/impl/future_utils.hpp>
 #include <engine/impl/wait_list_light.hpp>
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
+#include <userver/logging/log.hpp> 
+
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
 
 template <>
 struct fmt::formatter<USERVER_NAMESPACE::engine::io::FdPoller::State> {
@@ -114,10 +120,12 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor {
 
     void RethrowErrorResult() const override {}
 
-    TaskProcessor* const task_processor_;
-    const bool use_epoll_io_poller_;
-    int current_fd_{-1}; 
-    Kind current_kind_{Kind::kRead};  
+    TaskProcessor* const task_processor_{nullptr};
+    bool use_epoll_io_poller_{false}; 
+#ifdef __linux__     
+    int current_fd_{-1};               
+    Kind current_kind_{Kind::kRead};   
+#endif
 
     std::atomic<FdPoller::State> state_{FdPoller::State::kInvalid};
     engine::impl::FastPimplWaitListLight waiters_;
@@ -150,8 +158,8 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
     auto& current = current_task::GetCurrentTaskContext();
     engine::impl::TaskContext::WakeupSource wakeup_source = engine::impl::TaskContext::WakeupSource::kNone;
 
-    if (use_epoll_io_poller_) {
 #ifdef __linux__
+    if (use_epoll_io_poller_ && task_processor_) {
         bool started_polling = false;
         try {
             int epoll_events = 0;
@@ -190,13 +198,8 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
             // Woken by deadline, cancellation, etc.
             events_that_happened_.store(Kind{}, std::memory_order_relaxed); // Indicate no I/O event
         }
-
-#else
-        // Should not happen due to use_epoll_io_poller_ check
-        UINVARIANT(false, "Epoll mode requested but not supported on this platform.");
-#endif
     } else {
-
+#endif
         engine::impl::FutureWaitStrategy wait_strategy{*this, current};
         wakeup_source = current.Sleep(wait_strategy, deadline);
 
@@ -205,7 +208,9 @@ engine::impl::TaskContext::WakeupSource FdPoller::Impl::DoWait(Deadline deadline
         * callback (IoWatcherCb) is running.
         */
         watcher_.Stop();
+#ifdef __linux__
     }
+#endif
     return wakeup_source;
 }
 
@@ -221,12 +226,19 @@ void FdPoller::Impl::Invalidate() {
          old_state = State::kInUse;
          state_.compare_exchange_strong(old_state, State::kInvalid);
     }
+#ifdef __linux__
     current_fd_ = -1;
+#endif
 }
 
 void FdPoller::Impl::StopWatcher() noexcept {
     UASSERT(IsValid());
     watcher_.Stop();
+#ifdef __linux__
+    if (use_epoll_io_poller_ && task_processor_ && current_fd_ != -1) {
+        task_processor_->StopEpollPolling(current_fd_);
+    }
+#endif
 }
 
 void FdPoller::Impl::IoWatcherCb(struct ev_loop*, ev_io* watcher, int) noexcept {
@@ -304,13 +316,13 @@ void FdPoller::SwitchStateToReadyToUse() {
 
 void FdPoller::Impl::Reset(int fd, Kind kind) {
     UASSERT(!IsValid());
+    
+#ifdef __linux__
     current_fd_ = fd;
     current_kind_ = kind;
+#endif
 
-    if (!use_epoll_io_poller_) {
-        UASSERT(watcher_.GetFd() == fd || watcher_.GetFd() == -1);
-        watcher_.Set(fd, GetEvMode(kind));
-    }
+    watcher_.Set(fd, GetEvMode(kind));
     state_.store(State::kReadyToUse, std::memory_order_release);
 }
 

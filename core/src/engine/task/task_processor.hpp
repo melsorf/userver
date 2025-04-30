@@ -76,9 +76,10 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
-#ifdef __linux__
-    bool StartEpollPolling(int fd, impl::TaskContext* context, int epoll_events);
+    #ifdef __linux__
+    bool UseEpollPolling() const noexcept { return config_.use_epoll_io_poller; }
     
+    bool StartEpollPolling(int fd, impl::TaskContext* context, int epoll_events);
     bool StopEpollPolling(int fd);
 #endif
 
