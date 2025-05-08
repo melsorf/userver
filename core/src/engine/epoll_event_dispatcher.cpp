@@ -135,7 +135,6 @@ std::size_t EpollEventDispatcher::RegisterFd(
         return std::numeric_limits<std::size_t>::max();
     }
     
-    // For non-task FDs (like sockets) use edge-triggered mode
     struct epoll_event ev{};
     ev.events = events | EPOLLET; 
     
@@ -280,7 +279,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     }
     
     int epoll_fd = thread_epoll_fds_[thread_index];
-    constexpr std::size_t kMaxEvents{256};
+    constexpr std::size_t kMaxEvents{512};
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_.load(std::memory_order_acquire)) {

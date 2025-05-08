@@ -360,6 +360,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
 
     bool epoll_registered = false;
 #ifdef __linux__
+    // Unregister old fd if needed
     {
         std::lock_guard<std::mutex> lock(epoll_mutex_);
         if (use_epoll_ && fd_ >= 0 && registered_fd_index_ && task_processor_) {
@@ -373,13 +374,10 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             task_processor_ = nullptr;
         }
     }
-
-    if (register_epollet && use_epoll_requested_) {
-        engine::TaskProcessor* current_processor = nullptr;
-        if (engine::current_task::IsTaskProcessorThread()) {
-            current_processor = &engine::current_task::GetTaskProcessor();
-        }
-        if (current_processor) {
+    // Try to register with epoll if requested
+    if (register_epollet && use_epoll_requested_ && engine::current_task::IsTaskProcessorThread()) {
+        engine::TaskProcessor* current_processor = &engine::current_task::GetTaskProcessor();
+        if (current_processor && current_processor->IsEpollModeEnabled()) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto weak_self = GetWeakFromThis();
             auto callback = [this, kind](uint32_t events) {
@@ -401,16 +399,15 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 events_that_happened_.store(userver_kind, std::memory_order_release);
                 WakeupWaiters();
             };
-            {
-                std::lock_guard<std::mutex> lock(epoll_mutex_);
-                auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
-                if (reg_index != std::numeric_limits<std::size_t>::max()) {
-                    fd_ = fd;
-                    registered_fd_index_ = reg_index;
-                    use_epoll_ = true;
-                    task_processor_ = current_processor;
-                    epoll_registered = true;
-                }
+            // Register with the TaskProcessor's epoll dispatcher
+            std::lock_guard<std::mutex> lock(epoll_mutex_);
+            auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
+            if (reg_index != std::numeric_limits<std::size_t>::max()) {
+                fd_ = fd;
+                registered_fd_index_ = reg_index;
+                use_epoll_ = true;
+                task_processor_ = current_processor;
+                epoll_registered = true;
             }
         }
     }
