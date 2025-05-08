@@ -6,6 +6,7 @@
 #include <array>
 
 #include <userver/engine/io/exception.hpp>
+#include <userver/logging/log.hpp>
 #include <userver/utils/assert.hpp>
 #include <userver/utils/fast_scope_guard.hpp>
 
@@ -35,9 +36,15 @@ Pipe::Pipe() {
     read_guard.Release();
     writer = PipeWriter(pipefd[1]);
     write_guard.Release();
+
+    writer.fd_control_->Write().NotifyReady();
 }
 
-PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+PipeReader::PipeReader(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
+    if (fd_control_) {
+        fd_control_->Read().SetEpollMode(true);
+    }
+}
 
 bool PipeReader::IsValid() const { return !!fd_control_; }
 
@@ -75,9 +82,21 @@ int PipeReader::Release() noexcept {
     return fd;
 }
 
-void PipeReader::Close() { fd_control_.reset(); }
+void PipeReader::Close() {
+#ifdef __linux__
+    // Always notify waiters before closing
+    if (fd_control_) {
+        fd_control_->Read().NotifyReady();
+    }
+#endif
+    fd_control_.reset();
+}
 
-PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {}
+PipeWriter::PipeWriter(int fd) : fd_control_(impl::FdControl::Adopt(fd)) {
+    if (fd_control_) {
+        fd_control_->Write().SetEpollMode(true);
+    }
+}
 
 bool PipeWriter::IsValid() const { return !!fd_control_; }
 
@@ -91,6 +110,7 @@ size_t PipeWriter::WriteAll(const void* buf, size_t len, Deadline deadline) {
         throw IoException("Attempt to WriteAll to closed pipe end");
     }
     auto& dir = fd_control_->Write();
+    dir.ResetReady(); 
     impl::Direction::SingleUserGuard guard(dir);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     void* nonconst_buf = const_cast<void*>(buf);
@@ -108,7 +128,15 @@ int PipeWriter::Release() noexcept {
     return fd;
 }
 
-void PipeWriter::Close() { fd_control_.reset(); }
+void PipeWriter::Close() {
+#ifdef __linux__
+    // Always notify waiters before closing
+    if (fd_control_) {
+        fd_control_->Write().NotifyReady();
+    }
+#endif
+    fd_control_.reset();
+}
 
 }  // namespace engine::io
 
