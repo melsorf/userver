@@ -12,6 +12,7 @@
 #include <userver/utils/assert.hpp>
 
 #include <engine/task/task_context.hpp>
+#include <engine/task/task_processor.hpp>
 #include <utils/check_syscall.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -63,6 +64,24 @@ Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReady
 // the same ThreadControl for the sake of better balancing of ev threads.
 FdControl::FdControl(const ev::ThreadControl& control) : read_(control), write_(control) {}
 
+bool Direction::Wait(Deadline deadline) {
+#ifdef __linux__
+    if (is_ready_.load(std::memory_order_acquire)) {
+        return true;
+    }
+#endif
+    
+    bool result = poller_.Wait(deadline).has_value();
+
+#ifdef __linux__
+    if (result) {
+        is_ready_.store(true, std::memory_order_release);
+    }
+#endif
+
+    return result;
+}
+
 FdControl::~FdControl() {
     try {
         Close();
@@ -79,23 +98,40 @@ FdControlHolder FdControl::Adopt(int fd) {
     ReduceSigpipe(fd);
     fd_control->read_.Reset(fd, Direction::Kind::kRead);
     fd_control->write_.Reset(fd, Direction::Kind::kWrite);
+
+    // Configure for epoll mode if available
+    bool use_epoll = false;
+    try {
+        auto& task_processor = current_task::GetTaskProcessor();
+        use_epoll = task_processor.IsEpollModeEnabled();
+    } catch (...) {
+        // May be called from non-coroutine context
+    }
+    
+    fd_control->read_.SetEpollMode(use_epoll);
+    fd_control->write_.SetEpollMode(use_epoll);
+
+    fd_control->write_.NotifyReady();
+    
     return fd_control;
 }
 
 void FdControl::Close() {
     if (!IsValid()) return;
-    Invalidate();
-
     const auto fd = Fd();
+#ifdef __linux__
+     // Notify waiters before closing
+    read_.NotifyReady();
+    write_.NotifyReady();
+#endif
+    Invalidate();
+    if (fd < 0) return;
     if (::close(fd) == -1) {
         const auto error_code = errno;
         std::error_code ec(error_code, std::system_category());
         UASSERT_MSG(!error_code, "Failed to close fd=" + std::to_string(fd));
         LOG_ERROR() << "Cannot close fd " << fd << ": " << ec.message();
     }
-
-    read_.WakeupWaiters();
-    write_.WakeupWaiters();
 }
 
 void FdControl::Invalidate() {

@@ -4,6 +4,9 @@
 /// @brief Low-level file descriptor r/w poller
 
 #include <memory>
+#ifdef __linux__
+#include <mutex>
+#endif
 #include <optional>
 
 #include <userver/engine/deadline.hpp>
@@ -67,7 +70,7 @@ public:
     /// Setup fd and kind to wait for. After Reset() you may call Wait().
     /// FdPoller does not take the ownership of `fd`, you still have to close `fd`
     /// when you're done.
-    void Reset(int fd, Kind kind);
+    void Reset(int fd, Kind kind, bool register_epollet = true);
 
     /// Wait for an event kind that was passed in the latest Reset() call. If the
     /// operation (read/write) can already be handled, Wait() returns
@@ -87,6 +90,9 @@ public:
     engine::impl::ContextAccessor* TryGetContextAccessor() noexcept;
     /// @endcond
 
+#ifdef __linux__
+    void SetEpollMode(bool use_epoll);
+#endif
 private:
     friend class impl::Direction;
 
@@ -101,7 +107,7 @@ private:
     void SwitchStateToReadyToUse();
 
     struct Impl;
-    utils::FastPimpl<Impl, 128, 16> pimpl_;
+    utils::FastPimpl<Impl, 224, 16> pimpl_;
 };
 
 }  // namespace engine::io

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <moodycamel/blockingconcurrentqueue.h>
 #include <moodycamel/lightweightsemaphore.h>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -17,6 +19,7 @@ class TaskContext;
 class TaskQueue final {
 public:
     explicit TaskQueue(const TaskProcessorConfig& config);
+    ~TaskQueue(); 
 
     void Push(boost::intrusive_ptr<impl::TaskContext>&& context);
 
@@ -29,6 +32,8 @@ public:
 
     void PrepareWorker(std::size_t index);
 
+    std::optional<boost::intrusive_ptr<impl::TaskContext>> PopNonBlocking();
+
 private:
     void DoPush(impl::TaskContext* context);
 
@@ -36,6 +41,12 @@ private:
 
     moodycamel::ConcurrentQueue<impl::TaskContext*> queue_;
     moodycamel::LightweightSemaphore queue_semaphore_;
+
+#ifdef __linux__
+    int notify_fd_{-1};  // File descriptor for task notifications via eventfd
+public:
+    int GetNotifyFd() const;  // For EpollEventDispatcher to use
+#endif
 };
 
 }  // namespace engine
