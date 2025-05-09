@@ -62,12 +62,9 @@ Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReady
 
 void Direction::NotifyReady() {
 #ifdef __linux__
-    if (current_task::GetTaskProcessor().IsEpollModeEnabled()) {
-        // If using epoll mode, manually trigger a wakeup for waiters
-        is_ready_.store(true, std::memory_order_release);
+        poller_.ResetReady();
         WakeupWaiters();
         return;
-    }
 #endif
     WakeupWaiters();
 }
