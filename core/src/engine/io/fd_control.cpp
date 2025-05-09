@@ -62,9 +62,12 @@ Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReady
 
 void Direction::NotifyReady() {
 #ifdef __linux__
-        poller_.ResetReady();
+    if (poller_.IsEpollMode()) {
+        // If using epoll mode, mark as ready and wake waiters
+        is_ready_.store(true, std::memory_order_release);
         WakeupWaiters();
         return;
+    }
 #endif
     WakeupWaiters();
 }
