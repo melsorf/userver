@@ -510,7 +510,7 @@ void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
             // If this is the primary thread, periodically run the libev loop 
             // to process child watchers
             if (need_child_watchers) {
-                pools_->EventThreadPool().GetEvDefaultLoopThread().RunOnce();
+                pools_->EventThreadPool().GetEvDefaultLoopThread()->RunOnce();
             }
             
             if (is_shutting_down_) break;
