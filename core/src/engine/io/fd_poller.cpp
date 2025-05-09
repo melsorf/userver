@@ -405,6 +405,12 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 use_epoll_ = true;
                 task_processor_ = current_processor;
                 epoll_registered = true;
+
+                if (kind == Kind::kWrite || kind == Kind::kReadWrite) {
+                    // Pipes are typically immediately writable, so mark as ready for write
+                    // because EPOLLET won't trigger for initially writable fds
+                    events_that_happened_.store(Kind::kWrite, std::memory_order_release);
+                }
             }
         }
     }

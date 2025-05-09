@@ -60,6 +60,18 @@ Direction::SingleUserGuard::SingleUserGuard(Direction& dir) : dir_(dir) { dir_.p
 Direction::SingleUserGuard::~SingleUserGuard() { dir_.poller_.SwitchStateToReadyToUse(); }
 #endif  // #ifndef NDEBUG
 
+void Direction::NotifyReady() {
+#ifdef __linux__
+    if (use_epoll_) {
+        // If using epoll mode, manually trigger a wakeup for waiters
+        is_ready_.store(true, std::memory_order_release);
+        WakeupWaiters();
+        return;
+    }
+#endif
+    WakeupWaiters();
+}
+
 // Write operations on socket usually do not block, so it makes sense to reuse
 // the same ThreadControl for the sake of better balancing of ev threads.
 FdControl::FdControl(const ev::ThreadControl& control) : read_(control), write_(control) {}

@@ -122,14 +122,7 @@ public:
 
     void SetEpollMode(bool use_epoll) { poller_.SetEpollMode(use_epoll); }
 
-    // For epoll integration - allows sockets to wake up waiters
-    void NotifyReady() {
-#ifdef __linux__
-        is_ready_.store(true, std::memory_order_release);
-#endif
-        WakeupWaiters();
-    }
-
+    void NotifyReady();
 private:
     friend class FdControl;
     explicit Direction(const ev::ThreadControl& control) : poller_(control) {}
