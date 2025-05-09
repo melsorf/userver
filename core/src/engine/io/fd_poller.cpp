@@ -410,6 +410,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     // Pipes are typically immediately writable, so mark as ready for write
                     // because EPOLLET won't trigger for initially writable fds
                     events_that_happened_.store(Kind::kWrite, std::memory_order_release);
+                    WakeupWaiters();
                 }
             }
         }
