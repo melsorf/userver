@@ -84,11 +84,7 @@ uint32_t KindToEpollEvents(FdPoller::Kind kind) {
 
 }  // namespace
 
-struct FdPoller::Impl final 
-    : public engine::impl::ContextAccessor
-#ifdef __linux__
-    , public std::enable_shared_from_this<FdPoller::Impl>
-#endif
+struct FdPoller::Impl final : public engine::impl::ContextAccessor
 {
     Impl(ev::ThreadControl control);
 
@@ -126,7 +122,7 @@ struct FdPoller::Impl final
     }
 
 #ifdef __linux__
-    std::weak_ptr<FdPoller::Impl> GetWeakFromThis();
+    std::weak_ptr<void> GetWeakReference();
 #endif
 
     void RemoveWaiter(engine::impl::TaskContext& waiter) noexcept override {
@@ -164,6 +160,8 @@ struct FdPoller::Impl final
     std::optional<std::size_t> registered_fd_index_;
     engine::TaskProcessor* task_processor_{nullptr};
     std::mutex epoll_mutex_; 
+
+    std::shared_ptr<void> self_reference_;
 #endif
 };
 
@@ -345,12 +343,11 @@ void FdPoller::SetEpollMode(bool use_epoll) {
 #endif
 
 #ifdef __linux__
-std::weak_ptr<FdPoller::Impl> FdPoller::Impl::GetWeakFromThis() {
-    try {
-        return shared_from_this();
-    } catch (const std::bad_weak_ptr&) {
-        return {};
+std::weak_ptr<void> GetWeakReference() {
+    if (!self_reference_) {
+        self_reference_ = std::shared_ptr<void>(this, [](void*){/*already managed by FastPimpl*/});
     }
+    return self_reference_;
 }
 #endif
 
@@ -379,7 +376,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         engine::TaskProcessor* current_processor = &engine::current_task::GetTaskProcessor();
         if (current_processor && current_processor->IsEpollModeEnabled()) {
             uint32_t epoll_events = KindToEpollEvents(kind);
-            auto weak_self = GetWeakFromThis();
+            auto weak_ref = GetWeakReference();
             auto callback = [this, kind](uint32_t events) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind userver_kind = kind;
@@ -401,7 +398,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
             };
             // Register with the TaskProcessor's epoll dispatcher
             std::lock_guard<std::mutex> lock(epoll_mutex_);
-            auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_self);
+            auto reg_index = current_processor->RegisterFd(fd, epoll_events, std::move(callback), weak_ref);
             if (reg_index != std::numeric_limits<std::size_t>::max()) {
                 fd_ = fd;
                 registered_fd_index_ = reg_index;
