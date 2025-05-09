@@ -343,7 +343,7 @@ void FdPoller::SetEpollMode(bool use_epoll) {
 #endif
 
 #ifdef __linux__
-std::weak_ptr<void> GetWeakReference() {
+std::weak_ptr<void> FdPoller::Impl::GetWeakReference() {
     if (!self_reference_) {
         self_reference_ = std::shared_ptr<void>(this, [](void*){/*already managed by FastPimpl*/});
     }
