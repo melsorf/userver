@@ -472,7 +472,7 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 // Check if epoll mode is enabled for this task processor
 bool TaskProcessor::IsEpollModeEnabled() const {
-    return config_.use_epoll_mode && std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_;
+    return config_.use_epoll_mode;
 }
 
 #ifdef __linux__

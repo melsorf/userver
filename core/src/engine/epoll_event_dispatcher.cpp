@@ -253,7 +253,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
     for (size_t i = 0; i < thread_count_; ++i) {
         if (thread_spinning_[i].load(std::memory_order_acquire)) {
             // One of the threads in the spin state will take the task itself
-            return utils::RandRange(thread_count_);
+            return std::nullopt;
         }
     }
     
@@ -268,7 +268,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
             return i;
         }
     }
-    return utils::RandRange(thread_count_);
+    return std::nullopt;
 }
 
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
@@ -341,7 +341,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
             continue;
         }
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
