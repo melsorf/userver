@@ -398,7 +398,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             }
             
             if (callback_info.callback) {
-                uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
+                uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP);
                 if (event_mask) {
                     bool should_call = true;
                     int fd_to_unregister = -1;

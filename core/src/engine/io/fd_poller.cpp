@@ -381,21 +381,29 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor && current_processor->IsEpollModeEnabled()) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto weak_ref = GetWeakReference();
-            auto callback = [this, kind](uint32_t events) {
+            auto callback = [this, kind](uint32_t events_from_dispatcher) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
-                FdPoller::Kind userver_kind = kind;
+                FdPoller::Kind happened_kind;
                 
-                if (events & (EPOLLHUP | EPOLLERR)) {
-                    userver_kind = FdPoller::Kind::kReadWrite;
-                } else if ((events & EPOLLIN) && (events & EPOLLOUT)) {
-                    userver_kind = FdPoller::Kind::kReadWrite;
-                } else if (events & EPOLLIN) {
-                    userver_kind = FdPoller::Kind::kRead;
-                } else if (events & EPOLLOUT) {
-                    userver_kind = FdPoller::Kind::kWrite;
+                if (events_from_dispatcher & (EPOLLHUP | EPOLLERR)) {
+                    happened_kind = FdPoller::Kind::kReadWrite;
+                } else if (events_from_dispatcher & EPOLLRDHUP) {
+                    if (events_from_dispatcher & EPOLLOUT) {
+                        happened_kind = FdPoller::Kind::kReadWrite;
+                    } else {
+                        happened_kind = FdPoller::Kind::kRead;
+                    }
+                } else if ((events_from_dispatcher & EPOLLIN) && (events_from_dispatcher & EPOLLOUT)) {
+                    happened_kind = FdPoller::Kind::kReadWrite;
+                } else if (events_from_dispatcher & EPOLLIN) {
+                    happened_kind = FdPoller::Kind::kRead;
+                } else if (events_from_dispatcher & EPOLLOUT) {
+                    happened_kind = FdPoller::Kind::kWrite;
+                } else {
+                    return;
                 }
                 
-                events_that_happened_.store(userver_kind, std::memory_order_release);
+                events_that_happened_.store(happened_kind, std::memory_order_release);
                 WakeupWaiters();
             };
             // Register with the TaskProcessor's epoll dispatcher
