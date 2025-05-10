@@ -472,16 +472,14 @@ TaskProcessor::OverloadByLength TaskProcessor::ComputeOverloadByLength(
 
 // Check if epoll mode is enabled for this task processor
 bool TaskProcessor::IsEpollModeEnabled() const {
-    return config_.use_epoll_mode;
+    return config_.use_epoll_mode && std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_;
 }
 
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
                                      std::weak_ptr<void> owner) {
-    if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
-        if (epoll_ev_dispatcher_) {
-            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
-        }
+    if (IsEpollModeEnabled()) {
+        return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
     }
     return std::numeric_limits<std::size_t>::max();
 }
