@@ -227,9 +227,13 @@ void FdPoller::Impl::Invalidate() {
     engine::TaskProcessor* processor = nullptr;
     {
         std::lock_guard<std::mutex> lock(epoll_mutex_);
-        if (use_epoll_ && fd_ >= 0 &&task_processor_ && registered_fd_index_) {
+        if (use_epoll_ && fd_ >= 0 && task_processor_ && registered_fd_index_) {
             fd_to_unregister = fd_;
             processor = task_processor_;
+
+            // Wake up any waiters before unregistering
+            events_that_happened_.store(Kind::kReadWrite, std::memory_order_release);
+            WakeupWaiters();
         }
         registered_fd_index_.reset();
         fd_ = -1;
