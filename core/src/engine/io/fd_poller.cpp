@@ -393,8 +393,6 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                     userver_kind = FdPoller::Kind::kRead;
                 } else if (events & EPOLLOUT) {
                     userver_kind = FdPoller::Kind::kWrite;
-                } else {
-                    return;
                 }
                 
                 events_that_happened_.store(userver_kind, std::memory_order_release);

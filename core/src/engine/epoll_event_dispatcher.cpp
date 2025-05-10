@@ -341,7 +341,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
             continue;
         }
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, 100);
+        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
