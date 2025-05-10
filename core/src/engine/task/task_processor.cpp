@@ -495,27 +495,10 @@ void TaskProcessor::UnregisterFd(int fd) {
 }
 
 void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
+    // Only use epoll when the underlying queue is TaskQueue.
     if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
         auto& queue = std::get<TaskQueue>(task_queue_);
-        
-        // Special watcher for child process events
-        bool is_primary_thread = (thread_index == 0);
-        bool need_child_watchers = is_primary_thread;
-        
-        // Use epoll for normal events but also check libev for child watchers
-        while (!is_shutting_down_) {
-            // Process tasks and epoll events
-            epoll_ev_dispatcher_->ProcessEvents(thread_index, queue, pools_);
-            
-            // If this is the primary thread, periodically run the libev loop 
-            // to process child watchers
-            if (need_child_watchers) {
-                pools_->EventThreadPool().GetEvDefaultLoopThread().RunInEvLoopSync(
-                    [](){ /* Empty lambda to force ev_loop iteration */ });
-            }
-            
-            if (is_shutting_down_) break;
-        }
+        epoll_ev_dispatcher_->ProcessEvents(thread_index, queue, pools_);
     } else {
         ProcessTasks();
     }

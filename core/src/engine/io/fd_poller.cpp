@@ -167,14 +167,6 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
-bool FdPoller::IsEpollMode() const {
-#ifdef __linux__
-    return pimpl_->use_epoll_;
-#else
-    return false;
-#endif
-}
-
 FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
 
 FdPoller::Impl::~Impl() {
@@ -413,13 +405,6 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
                 use_epoll_ = true;
                 task_processor_ = current_processor;
                 epoll_registered = true;
-
-                if (kind == Kind::kWrite || kind == Kind::kReadWrite) {
-                    // Pipes are typically immediately writable, so mark as ready for write
-                    // because EPOLLET won't trigger for initially writable fds
-                    events_that_happened_.store(Kind::kWrite, std::memory_order_release);
-                    WakeupWaiters();
-                }
             }
         }
     }

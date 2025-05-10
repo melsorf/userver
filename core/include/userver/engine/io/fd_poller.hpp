@@ -93,8 +93,6 @@ public:
 #ifdef __linux__
     void SetEpollMode(bool use_epoll);
 #endif
-    bool IsEpollMode() const;
-
 private:
     friend class impl::Direction;
 
