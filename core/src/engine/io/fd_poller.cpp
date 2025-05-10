@@ -381,7 +381,7 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         if (current_processor && current_processor->IsEpollModeEnabled()) {
             uint32_t epoll_events = KindToEpollEvents(kind);
             auto weak_ref = GetWeakReference();
-            auto callback = [this, kind](uint32_t events_from_dispatcher) {
+            auto callback = [this](uint32_t events_from_dispatcher) {
                 // Priority: HUP/ERR > RDHUP > IN > OUT
                 FdPoller::Kind happened_kind;
                 
