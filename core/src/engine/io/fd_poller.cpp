@@ -167,6 +167,14 @@ struct FdPoller::Impl final : public engine::impl::ContextAccessor
 
 void FdPoller::Impl::WakeupWaiters() { waiters_->SetSignalAndWakeupOne(); }
 
+bool FdPoller::IsEpollMode() const {
+#ifdef __linux__
+    return pimpl_->use_epoll_;
+#else
+    return false;
+#endif
+}
+
 FdPoller::Impl::Impl(ev::ThreadControl control) : watcher_(control, this) { watcher_.Init(&IoWatcherCb); }
 
 FdPoller::Impl::~Impl() {
