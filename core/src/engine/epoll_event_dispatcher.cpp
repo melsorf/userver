@@ -271,76 +271,50 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
     return std::nullopt;
 }
 
-void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
+void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue,
     std::shared_ptr<impl::TaskProcessorPools> pools) {
-    if (thread_index >= thread_epoll_fds_.size() || thread_epoll_fds_[thread_index] < 0) {
-        LOG_ERROR() << "Invalid epoll_fd for thread " << thread_index << ", falling back to regular ProcessTasks";
-        return;
-    }
-    
     int epoll_fd = thread_epoll_fds_[thread_index];
-    constexpr std::size_t kMaxEvents{512};
+    constexpr int kSpinCount = 1000;
     struct epoll_event events[kMaxEvents];
 
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
         // Process tasks first
         bool processed_task = false;
-        while (auto context_ptr = queue.PopNonBlocking()) {
+        while (auto ctx_opt = queue.PopNonBlocking()) {
             processed_task = true;
-            if (!context_ptr.has_value()) {
-                // "Stop" token
+            if (!ctx_opt.value()) {
                 is_shutting_down_.store(true, std::memory_order_release);
                 break;
             }
-            if (!context_ptr.value()) continue;
-            auto context = context_ptr.value();
-            bool has_failed = false;
-            
-            // Process task
-            try {
-                auto& task_counter = context->GetTaskCounter();
-                impl::TaskCounter::RunningToken run_token{task_counter};
-                context->DoStep();
-            } catch (...) {
-                LOG_ERROR() << "Unhandled exception from DoStep()";
-                has_failed = true;
-            }
+            auto ctx = ctx_opt.value();
+            impl::TaskCounter::RunningToken token{ctx->GetTaskCounter()};
+            ctx->DoStep();
             pools->GetCoroPool().AccountStackUsage();
-            
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
-            }
+            if (ctx->IsFinished()) ctx->FinishDetached();
         }
-
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
         if (processed_task) continue;
 
-        // Mark thread as spinning.
+        // mark spinning
         thread_spinning_[thread_index].store(true, std::memory_order_release);
-        utils::FastScopeGuard spinning_guard([&] () noexcept {
-            thread_spinning_[thread_index].store(false, std::memory_order_release);
-        });
-        constexpr int kSpinCount = 1000;
         for (int i = 0; i < kSpinCount; ++i) {
-            if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
-                break;  // There's work to do, don't sleep
+            if (queue.GetSizeApproximate() > 0 ||
+                is_shutting_down_.load(std::memory_order_acquire)) {
+                break;
             }
             std::this_thread::yield();
         }
         thread_spinning_[thread_index].store(false, std::memory_order_release);
-        if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
+
+        if (queue.GetSizeApproximate() > 0 ||
+            is_shutting_down_.load(std::memory_order_acquire)) {
             continue;
         }
         
         // Mark thread as sleeping
         thread_sleep_start_time_[thread_index].store(
             std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
-        
-        // Final check before epoll_wait
-        if (queue.GetSizeApproximate() > 0 || is_shutting_down_.load(std::memory_order_acquire)) {
-            thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
-            continue;
-        }
+    
         int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
         
