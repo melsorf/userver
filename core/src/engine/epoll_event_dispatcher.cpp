@@ -226,7 +226,7 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
     return std::nullopt;
 }
 
-void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
+void EpollEventDispatcher::ProcessEvents(TaskProcessor& task_processor_ref, std::size_t thread_index, TaskQueue& queue, 
     std::shared_ptr<impl::TaskProcessorPools> pools) {
     if (thread_index >= thread_epoll_fds_.size() || thread_epoll_fds_[thread_index] < 0) {
         LOG_ERROR() << "Invalid epoll_fd for thread " << thread_index << ", falling back to regular ProcessTasks";
@@ -236,7 +236,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     int epoll_fd = thread_epoll_fds_[thread_index];
     int notify_fd_for_this_thread = thread_notify_fds_[thread_index];
 
-    auto& task_processor = engine::current_task::GetTaskProcessor();
+    auto& task_processor = task_processor_ref;
 
     constexpr std::size_t kMaxEvents = 64;
     struct epoll_event events[kMaxEvents];

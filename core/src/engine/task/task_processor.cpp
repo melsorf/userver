@@ -496,7 +496,7 @@ void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
     // Only use epoll when the underlying queue is TaskQueue.
     if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
         auto& queue = std::get<TaskQueue>(task_queue_);
-        epoll_ev_dispatcher_->ProcessEvents(thread_index, queue, pools_);
+        epoll_ev_dispatcher_->ProcessEvents(*this, thread_index, queue, pools_);
     } else {
         ProcessTasks();
     }
