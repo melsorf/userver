@@ -2,6 +2,7 @@
 #include "epoll_event_dispatcher.hpp"
 
 #include <sys/eventfd.h>
+#include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -38,6 +39,14 @@ int CreateEventFd() {
                                 std::string(strerror(errno)));
     }
     return fd;
+}
+
+bool IsEdgeTriggerableFd(int fd) {
+    struct stat st{};
+    if (fstat(fd, &st) != 0) {
+        return false;
+    }
+    return S_ISSOCK(st.st_mode);
 }
 }  // namespace
 
@@ -136,7 +145,11 @@ std::size_t EpollEventDispatcher::RegisterFd(
     }
     
     struct epoll_event ev{};
-    ev.events = events | EPOLLET; 
+    uint32_t epoll_flags = events;
+    if (IsEdgeTriggerableFd(fd)) {
+        epoll_flags |= EPOLLET;
+    }
+    ev.events = epoll_flags;
     
     // Choose a specific thread to handle this fd
     auto target_thread = utils::RandRange(thread_count_);
