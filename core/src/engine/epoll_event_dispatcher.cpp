@@ -335,9 +335,23 @@ void EpollEventDispatcher::ProcessEvents(TaskProcessor& task_processor_ref, std:
         if (is_shutting_down_.load(std::memory_order_acquire)) break;
         
         if (ready_fds < 0) {
-            if (errno == EINTR) continue;
-            LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
-            break;
+            int err = errno;
+            if (err == EINTR) {
+                continue; // Interrupted by a signal, just retry
+            }
+            
+            LOG_ERROR() << "epoll_wait failed for thread " << thread_index 
+                        << " with epoll_fd " << epoll_fd << ": " << strerror(err) << " (errno " << err << ")";
+            
+            if (err == EBADF || err == EINVAL) { 
+                // EBADF: epoll_fd is not valid (e.g., closed)
+                // EINVAL: epoll_fd is not an epoll fd, or maxevents is <= 0.
+                LOG_CRITICAL() << "Unrecoverable error for epoll_fd " << epoll_fd 
+                               << " on thread " << thread_index << ". Stopping event processing for this thread.";
+                break;
+            }
+            
+            continue; // Try to continue processing
         }
         
         for (int i = 0; i < ready_fds; ++i) {
