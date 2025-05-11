@@ -235,7 +235,6 @@ void EpollEventDispatcher::ProcessEvents(TaskProcessor& task_processor_ref, std:
     
     int epoll_fd = thread_epoll_fds_[thread_index];
     int notify_fd_for_this_thread = thread_notify_fds_[thread_index];
-
     auto& task_processor = task_processor_ref;
 
     constexpr std::size_t kMaxEvents = 64;
@@ -249,14 +248,16 @@ void EpollEventDispatcher::ProcessEvents(TaskProcessor& task_processor_ref, std:
             if (!context_ptr_opt) { // No more tasks or queue empty
                 break;
             }
-            
+            boost::intrusive_ptr<impl::TaskContext> task_ptr = context_ptr_opt.value();
             processed_task_in_main_loop_iteration = true;
-            if (!context_ptr_opt.has_value()) {
+
+            if (!task_ptr) {
                 // Stop token
                 is_shutting_down_.store(true, std::memory_order_release);
                 break;
             }
-            engine::impl::TaskContext& context = *context_ptr_opt.value();
+            // task_ptr is a valid, non-null intrusive_ptr to a TaskContext
+            engine::impl::TaskContext& context = *task_ptr;
             task_processor.CheckWaitTime(context);
 
             bool has_failed = false;
@@ -285,31 +286,34 @@ void EpollEventDispatcher::ProcessEvents(TaskProcessor& task_processor_ref, std:
         constexpr int kSpinIterations = 1000; // TODO: Make configurable
         for (int k = 0; k < kSpinIterations; ++k) {
             auto context_ptr_opt = queue.PopNonBlocking();
-            if (context_ptr_opt) {
-                if (!context_ptr_opt.has_value()) { // Stop token
-                    is_shutting_down_.store(true, std::memory_order_relaxed);
-                } else {
-                    engine::impl::TaskContext& context = *context_ptr_opt.value();
-                    task_processor.CheckWaitTime(context);
-                    bool has_failed = false;
-                    try {
-                        engine::impl::TaskCounter::RunningToken token{task_processor.GetTaskCounter()};
-                        context.DoStep();
-                    } catch (const std::exception& ex) {
-                        LOG_ERROR() << "Uncaught exception from DoStep in spin for task_id="
-                                    << logging::HexShort(context.GetTaskId()) << ": " << ex;
-                        has_failed = true;
-                    }
-                    pools->GetCoroPool().AccountStackUsage();
-                    if (has_failed || context.IsFinished()) {
-                        context.FinishDetached();
-                    }
-                }
-                task_found_during_spin = true;
-                break; 
+            if (!context_ptr_opt) { // Queue empty
+                if (is_shutting_down_.load(std::memory_order_relaxed)) break;
+                std::this_thread::yield();
+                continue; 
             }
-            if (is_shutting_down_.load(std::memory_order_relaxed)) break;
-            std::this_thread::yield();
+             // context_ptr_opt has a value.
+            boost::intrusive_ptr<impl::TaskContext> task_ptr = context_ptr_opt.value();
+            task_found_during_spin = true; 
+
+            if (!task_ptr) { // Stop token
+                is_shutting_down_.store(true, std::memory_order_relaxed);
+            } else { // Actual task
+                engine::impl::TaskContext& context = *task_ptr;
+                task_processor.CheckWaitTime(context);
+                bool has_failed = false;
+                try {
+                    engine::impl::TaskCounter::RunningToken token{task_processor.GetTaskCounter()};
+                    context.DoStep();
+                } catch (...) {
+                    LOG_ERROR() << "Unhandled non-std::exception from DoStep() in spin";
+                    has_failed = true;
+                }
+                pools->GetCoroPool().AccountStackUsage();
+                if (has_failed || context.IsFinished()) {
+                    context.FinishDetached();
+                }
+            }
+            break; // Found something (task or stop token), exit spin loop
         }
         thread_spinning_[thread_index].store(false, std::memory_order_relaxed);
         if (task_found_during_spin || is_shutting_down_.load(std::memory_order_relaxed)) {
