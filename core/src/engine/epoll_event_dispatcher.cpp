@@ -322,34 +322,29 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                 continue;
             }
 
-            if (ev & (EPOLLERR | EPOLLHUP)) {
-                std::lock_guard lock(fd_mutex_);
-                auto it = fd_callbacks_.find(fd);
-                if (it != fd_callbacks_.end()) {
-                    it->second.callback(ev);
-                }
-                continue;
-            }
-
-            FdCallbackInfo info;
-            bool forward = false;
+            std::function<void(uint32_t)> callback_copy;
+            size_t owner = thread_index;
+            bool do_forward = false;
             {
                 std::lock_guard lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
                 if (it != fd_callbacks_.end()) {
-                    if (it->second.owner_thread == thread_index) {
-                        info = it->second;
+                    auto& info = it->second;
+                    if (info.owner_thread != thread_index) {
+                        owner = info.owner_thread;
+                        do_forward = true;
                     } else {
-                        forward = true;
+                        callback_copy = info.callback;
                     }
                 }
             }
-            if (forward) {
-                PostEvent(info.owner_thread);
+            if (do_forward) {
+                PostEvent(owner);
                 continue;
             }
-            if (info.callback) {
-            info.callback(ev & (EPOLLIN|EPOLLOUT));
+            if (callback_copy) {
+                uint32_t user_events = ev & (EPOLLIN | EPOLLOUT | EPOLLHUP | EPOLLERR);
+                callback_copy(user_events);
             }
         }
     }
