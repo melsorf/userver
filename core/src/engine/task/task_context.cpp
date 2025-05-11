@@ -276,6 +276,10 @@ bool TaskContext::SetCancellable(bool value) {
     return std::exchange(is_cancellable_, value);
 }
 
+impl::TaskCounter& TaskContext::GetTaskCounter() noexcept {
+    return task_processor_.GetTaskCounter();
+}
+
 void TaskContext::SetBackground(bool is_background) {
     UASSERT(IsCurrent());
     UASSERT(state_ == Task::State::kRunning);

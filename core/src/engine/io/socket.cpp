@@ -16,6 +16,7 @@
 
 #include <build_config.hpp>
 #include <engine/io/fd_control.hpp>
+#include <engine/task/task_processor.hpp>
 #include <utils/check_syscall.hpp>
 
 USERVER_NAMESPACE_BEGIN
@@ -132,6 +133,9 @@ void FillIoSendData(const IoData* data, struct iovec* dst, std::size_t count) {
 Socket::Socket(AddrDomain domain, SocketType type) : domain_(domain), fd_control_(MakeSocket(domain, type)) {
     SetReadableContextAccessor(fd_control_->Read().TryGetContextAccessor());
     SetWritableContextAccessor(fd_control_->Write().TryGetContextAccessor());
+#ifdef __linux__
+    RegisterWithEpoll();
+#endif
 }
 
 Socket::Socket(int fd, AddrDomain domain) : domain_(domain), fd_control_(impl::FdControl::Adopt(fd)) {
@@ -149,6 +153,9 @@ Socket::Socket(int fd, AddrDomain domain) : domain_(domain), fd_control_(impl::F
             ));
         }
     }
+#endif
+#ifdef __linux__
+    RegisterWithEpoll();
 #endif
 }
 
@@ -457,13 +464,22 @@ const Sockaddr& Socket::Getsockname() {
 int Socket::Release() && noexcept {
     const int fd = Fd();
     if (IsValid()) {
+#ifdef __linux__
+        UnregisterFromEpoll();
+#endif
         fd_control_->Invalidate();
         fd_control_.reset();
     }
     return fd;
 }
 
-void Socket::Close() { fd_control_.reset(); }
+void Socket::Close() { 
+#ifdef __linux__
+    UnregisterFromEpoll();
+    epoll_socket_ref_.reset();
+#endif
+    fd_control_.reset(); 
+}
 
 int Socket::GetOption(int layer, int optname) const {
     UASSERT(IsValid());
@@ -492,6 +508,101 @@ void Socket::SetOption(int layer, int optname, int optval) {
         Fd()
     );
 }
+
+#ifdef __linux__
+Socket::~Socket() {
+    auto thread_id = epoll_thread_id_;
+    auto processor = registered_task_processor_;
+    int socket_fd = -1;
+    
+    // Get the fd before we reset other members
+    if (IsValid()) {
+        socket_fd = Fd();
+    }
+    
+    // Reset the epoll registration data
+    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    registered_task_processor_ = nullptr;
+    epoll_socket_ref_.reset();
+    
+    if (thread_id != std::numeric_limits<std::size_t>::max() && processor && socket_fd >= 0) {
+        try {
+            processor->UnregisterFd(socket_fd);
+        } catch (...) {
+            LOG_WARNING() << "Exception while unregistering socket from epoll in destructor";
+        }
+    }
+}
+
+void Socket::RegisterWithEpoll() {
+    if (!IsValid()) return;
+    
+    try {
+        auto& task_processor = engine::current_task::GetTaskProcessor();
+        if (task_processor.IsEpollModeEnabled()) {
+            int socket_fd = Fd();
+            if (socket_fd >= 0) {
+                epoll_socket_ref_ = std::make_shared<SocketRef>(
+                    SocketRef{socket_fd, fd_control_.get(), &task_processor}
+                );
+                
+                auto weak_ref = std::weak_ptr<void>(epoll_socket_ref_);
+                epoll_thread_id_ = task_processor.RegisterFd(
+                    socket_fd, 
+                    EPOLLET | EPOLLIN | EPOLLOUT | EPOLLRDHUP,
+                    [weak_ref](uint32_t events) {
+                        auto ref = std::static_pointer_cast<SocketRef>(weak_ref.lock());
+                        if (ref && ref->fd_control) {
+                            // Handle read events
+                            if (events & (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP)) {
+                                ref->fd_control->Read().NotifyReady();
+                            }
+                            // Handle write events
+                            if (events & (EPOLLOUT | EPOLLERR | EPOLLHUP)) {
+                                ref->fd_control->Write().NotifyReady();
+                            }
+                        }
+                    },
+                    weak_ref
+                );
+                
+                registered_task_processor_ = &task_processor;
+            }
+        }
+    } catch (const std::exception& ex) {
+        LOG_DEBUG() << "Failed to register socket with epoll: " << ex.what();
+    }
+}
+
+void Socket::UnregisterFromEpoll() {
+    if (epoll_thread_id_ == std::numeric_limits<std::size_t>::max() || !IsValid()) {
+        return;  // Already unregistered or socket invalid
+    }
+
+    try {
+        int fd = Fd();
+        if (fd >= 0) {
+            if (registered_task_processor_) {
+                registered_task_processor_->UnregisterFd(fd);
+            } else {
+                try {
+                    engine::current_task::GetTaskProcessor().UnregisterFd(fd);
+                } catch (const std::exception& ex) {
+                    LOG_WARNING() << "Failed to get current task processor for fd " << fd 
+                                << ": " << ex.what() 
+                                << ", socket might stay registered in epoll";
+                }
+            }
+        }
+    } catch (const std::exception& ex) {
+        LOG_DEBUG() << "Failed to unregister socket from epoll: " << ex.what();
+    }
+    
+    epoll_thread_id_ = std::numeric_limits<std::size_t>::max();
+    registered_task_processor_ = nullptr;
+    epoll_socket_ref_.reset();
+}
+#endif
 
 }  // namespace engine::io
 

@@ -19,6 +19,8 @@
 #include <userver/logging/logger.hpp>
 #include <utils/statistics/thread_statistics.hpp>
 
+#include <engine/epoll_event_dispatcher.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace engine {
@@ -76,6 +78,14 @@ public:
 
     std::vector<std::uint8_t> CollectCurrentLoadPct() const;
 
+    bool IsEpollModeEnabled() const;
+
+#ifdef __linux__
+    std::size_t RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
+        std::weak_ptr<void> owner = {});
+    void UnregisterFd(int fd);
+#endif 
+
 private:
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
@@ -126,6 +136,11 @@ private:
     std::atomic<bool> task_trace_logger_set_{false};
 
     std::unique_ptr<utils::statistics::ThreadPoolCpuStatsStorage> cpu_stats_storage_{nullptr};
+
+#ifdef __linux__
+    std::unique_ptr<EpollEventDispatcher> epoll_ev_dispatcher_;
+    void RunEventLoop(std::size_t thread_index) noexcept;
+#endif
 };
 
 /// Register a function that runs on all threads on task processor creation.

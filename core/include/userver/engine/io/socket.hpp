@@ -17,6 +17,10 @@ struct iovec;
 
 USERVER_NAMESPACE_BEGIN
 
+namespace engine {
+class TaskProcessor;
+}  // namespace engine
+
 namespace engine::io {
 
 /// Socket type
@@ -179,12 +183,37 @@ public:
         return SendAll(buf, len, deadline);
     }
 
+    Socket(Socket&&) noexcept = default;
+    Socket& operator=(Socket&&) noexcept = default;
+
+    Socket(const Socket&) = delete;
+    Socket& operator=(const Socket&) = delete;
+
+#ifdef __linux__
+    ~Socket();
+#endif
+
 private:
     AddrDomain domain_{AddrDomain::kUnspecified};
 
     impl::FdControlHolder fd_control_;
     Sockaddr peername_;
     Sockaddr sockname_;
+
+#ifdef __linux__
+    struct SocketRef {
+        int fd;
+        impl::FdControl* fd_control;
+        engine::TaskProcessor* task_processor;
+    };
+    std::size_t epoll_thread_id_{std::numeric_limits<std::size_t>::max()};
+    std::shared_ptr<SocketRef> epoll_socket_ref_;
+    // Register this socket with the epoll-based event dispatcher
+    void RegisterWithEpoll();
+    // Unregister this socket from the epoll-based event dispatcher
+    void UnregisterFromEpoll();
+    engine::TaskProcessor* registered_task_processor_{nullptr};
+#endif
 };
 
 }  // namespace engine::io

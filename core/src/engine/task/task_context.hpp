@@ -179,6 +179,8 @@ public:
 
     CountedCoroutinePtr& GetCoroutinePtr() noexcept;
 
+    impl::TaskCounter& GetTaskCounter() noexcept;
+
 private:
     class LocalStorageGuard;
 
