@@ -2,7 +2,6 @@
 #include "epoll_event_dispatcher.hpp"
 
 #include <sys/eventfd.h>
-#include <sys/timerfd.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -11,7 +10,6 @@
 
 #include <fmt/core.h>
 #include <userver/logging/log.hpp>
-#include <userver/utils/rand.hpp>
 
 #include <engine/task/task_context.hpp>
 #include <engine/task/task_counter.hpp>
@@ -407,9 +405,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
                         }
                     }
                 } else if (!found_cb) {
-                    LOG_TRACE() << "No callback found for fd " << current_fd << " on thread " << thread_index
-                                << ". Might have been recently unregistered or spurious. Events: 0x" << std::hex << event_mask;
-                    // To be safe, try to remove it from epoll if it's not the notify_fd
+                    LOG_TRACE() << "No callback found for fd " << current_fd << " on thread " << thread_index;
                      if (current_fd != notify_fd_for_this_thread) {
                         struct epoll_event dummy_ev{};
                         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, current_fd, &dummy_ev);
