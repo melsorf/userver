@@ -478,8 +478,10 @@ bool TaskProcessor::IsEpollModeEnabled() const {
 #ifdef __linux__
 std::size_t TaskProcessor::RegisterFd(int fd, uint32_t events, std::function<void(uint32_t)> callback, 
                                      std::weak_ptr<void> owner) {
-    if (IsEpollModeEnabled()) {
-        return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
+    if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
+        if (epoll_ev_dispatcher_) {
+            return epoll_ev_dispatcher_->RegisterFd(fd, events, std::move(callback), std::move(owner));
+        }
     }
     return std::numeric_limits<std::size_t>::max();
 }
@@ -496,7 +498,7 @@ void TaskProcessor::RunEventLoop(std::size_t thread_index) noexcept {
     // Only use epoll when the underlying queue is TaskQueue.
     if (std::holds_alternative<TaskQueue>(task_queue_) && epoll_ev_dispatcher_) {
         auto& queue = std::get<TaskQueue>(task_queue_);
-        epoll_ev_dispatcher_->ProcessEvents(*this, thread_index, queue, pools_);
+        epoll_ev_dispatcher_->ProcessEvents(thread_index, queue, pools_);
     } else {
         ProcessTasks();
     }

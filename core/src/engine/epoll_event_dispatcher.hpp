@@ -24,9 +24,6 @@ USERVER_NAMESPACE_BEGIN
 
 namespace engine {
 
-class TaskProcessor;
-class TaskQueue;
-
 namespace impl {
 class TaskProcessorPools;
 }
@@ -43,7 +40,7 @@ public:
     ~EpollEventDispatcher();
 
     // Process events using epoll (called by worker threads)
-    void ProcessEvents(TaskProcessor& task_processor_ref, std::size_t thread_index, TaskQueue& queue, 
+    void ProcessEvents(std::size_t thread_index, TaskQueue& queue, 
         std::shared_ptr<impl::TaskProcessorPools> pools);
     
     // Register a file descriptor with EPOLLET
