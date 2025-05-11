@@ -376,7 +376,8 @@ void FdPoller::Impl::Reset(int fd, Kind kind, bool register_epollet /*= true*/) 
         }
     }
     // Try to register with epoll if requested
-    if (register_epollet && use_epoll_requested_ && engine::current_task::IsTaskProcessorThread()) {
+    if (register_epollet && use_epoll_requested_ && engine::current_task::IsTaskProcessorThread()
+        && (kind == Kind::kRead || kind == Kind::kWrite)) {
         engine::TaskProcessor* current_processor = &engine::current_task::GetTaskProcessor();
         if (current_processor && current_processor->IsEpollModeEnabled()) {
             uint32_t epoll_events = KindToEpollEvents(kind);
