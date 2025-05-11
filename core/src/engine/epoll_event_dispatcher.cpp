@@ -9,6 +9,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include <fmt/core.h>
 #include <userver/logging/log.hpp>
 #include <userver/utils/rand.hpp>
 
@@ -272,8 +273,8 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
             }
             pools->GetCoroPool().AccountStackUsage();
             
-            if (has_failed || context->IsFinished()) {
-                context->FinishDetached();
+            if (has_failed || context.IsFinished()) {
+                context.FinishDetached();
             }
         }
 

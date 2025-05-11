@@ -87,6 +87,7 @@ public:
 #endif 
 
 private:
+    friend class EpollEventDispatcher;
     // Contains queue size cache when overloaded by length, 0 otherwise.
     using OverloadByLength = std::size_t;
 
