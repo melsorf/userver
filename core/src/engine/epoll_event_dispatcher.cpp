@@ -275,6 +275,7 @@ void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& qu
     std::shared_ptr<impl::TaskProcessorPools> pools) {
     const int epfd = thread_epoll_fds_[thread_index];
     constexpr int kSpin = 1000;
+    constexpr int kMaxEvents = 64;
     epoll_event events[kMaxEvents];
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
         bool did_task = false;
