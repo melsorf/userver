@@ -157,65 +157,50 @@ std::size_t EpollEventDispatcher::RegisterFd(
     bool registration_successful = false;
     {
         std::unique_lock<std::mutex> fd_lock(fd_mutex_);
-        
-        // Store callback info
         auto it = fd_callbacks_.find(fd);
-        bool has_existing = (it != fd_callbacks_.end());
+        const bool has_existing = (it != fd_callbacks_.end());
         if (has_existing && it->second.owner_thread != target_thread) {
-            target_thread = it->second.owner_thread;
+          target_thread = it->second.owner_thread;
         }
-        
+    
         if (has_existing) {
-            // Update existing callback
-            it->second.callback = std::move(callback);
-            it->second.requested_events = events;
+          it->second.callback = std::move(callback);
+          it->second.requested_events = events;
         } else {
-            // Register new callback
-            fd_callbacks_.emplace(fd, FdCallbackInfo{std::move(callback), events, target_thread});
+          fd_callbacks_.emplace(
+              fd, FdCallbackInfo{std::move(callback), events, target_thread});
         }
-        
-        // Register with the chosen thread's epoll instance
+    
         ev.data.fd = fd;
-        int epoll_fd = thread_epoll_fds_[target_thread];
-        
-        int op = has_existing ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
-        int result = epoll_ctl(epoll_fd, op, fd, &ev);
-        
-        if (result == -1) {
-            if (errno == EEXIST && op == EPOLL_CTL_ADD) {
-                // If fd was already registered, try to modify it
-                result = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-            }
-            
-            if (result == -1) {
-                LOG_WARNING() << "Failed to " << (op == EPOLL_CTL_ADD ? "add" : "modify") 
-                            << " fd " << fd << " to thread epoll: " << strerror(errno);
-                
-                // Remove the callback if we just added it
-                if (!has_existing) {
-                    fd_callbacks_.erase(fd);
-                }
-                
-                return std::numeric_limits<std::size_t>::max();
-            }
+        int epfd = thread_epoll_fds_[target_thread];
+        int op   = has_existing ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+        int res  = epoll_ctl(epfd, op, fd, &ev);
+    
+        if (res == -1 && errno == EEXIST && op == EPOLL_CTL_ADD) {
+          // already there? try modify
+          res = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
         }
-        
+        if (res == -1) {
+          LOG_WARNING() << "Failed to "
+                        << (op == EPOLL_CTL_ADD ? "add" : "modify")
+                        << " fd " << fd << " to thread epoll: " << strerror(errno);
+          if (!has_existing) fd_callbacks_.erase(fd);
+          return std::numeric_limits<std::size_t>::max();
+        }
         registration_successful = true;
         fd_lock.unlock();
         
-        // Register owner if provided (using a separate mutex to avoid deadlocks)
         if (registration_successful && owner.lock()) {
-            std::lock_guard<std::mutex> registry_lock(registry_mutex_);
+            std::lock_guard<std::mutex> reg_lock(registry_mutex_);
             fd_to_owner_[fd] = std::move(owner);
         }
     }
     
-    // Notify the target thread about new registration
     if (registration_successful) {
         PostEvent(target_thread);
+        return target_thread;
     }
-    
-    return registration_successful ? target_thread : std::numeric_limits<std::size_t>::max();
+    return std::numeric_limits<std::size_t>::max();
 }
 
 void EpollEventDispatcher::UnregisterFd(int fd) {
