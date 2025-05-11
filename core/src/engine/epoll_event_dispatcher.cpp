@@ -273,153 +273,82 @@ std::optional<std::size_t> EpollEventDispatcher::SelectThreadToWakeup() {
 
 void EpollEventDispatcher::ProcessEvents(std::size_t thread_index, TaskQueue& queue,
     std::shared_ptr<impl::TaskProcessorPools> pools) {
-    int epoll_fd = thread_epoll_fds_[thread_index];
-    constexpr int kSpinCount = 1000;
-    struct epoll_event events[kMaxEvents];
-
+    const int epfd = thread_epoll_fds_[thread_index];
+    constexpr int kSpin = 1000;
+    epoll_event events[kMaxEvents];
     while (!is_shutting_down_.load(std::memory_order_acquire)) {
-        // Process tasks first
-        bool processed_task = false;
-        while (auto ctx_opt = queue.PopNonBlocking()) {
-            processed_task = true;
-            if (!ctx_opt.value()) {
-                is_shutting_down_.store(true, std::memory_order_release);
-                break;
-            }
-            auto ctx = ctx_opt.value();
-            impl::TaskCounter::RunningToken token{ctx->GetTaskCounter()};
+        bool did_task = false;
+        while (auto opt = queue.PopNonBlocking()) {
+            did_task = true;
+            if (!opt.value()) { is_shutting_down_.store(true, std::memory_order_release); break; }
+            auto ctx = std::move(opt.value());
+            impl::TaskCounter::RunningToken tk{ctx->GetTaskCounter()};
             ctx->DoStep();
             pools->GetCoroPool().AccountStackUsage();
             if (ctx->IsFinished()) ctx->FinishDetached();
         }
-        if (is_shutting_down_.load(std::memory_order_acquire)) break;
-        if (processed_task) continue;
+        if (is_shutting_down_.load()) break;
+        if (did_task) continue;
 
-        // mark spinning
         thread_spinning_[thread_index].store(true, std::memory_order_release);
-        for (int i = 0; i < kSpinCount; ++i) {
-            if (queue.GetSizeApproximate() > 0 ||
-                is_shutting_down_.load(std::memory_order_acquire)) {
-                break;
-            }
+        for (int i = 0; i < kSpin; ++i) {
+            if (queue.GetSizeApproximate() || is_shutting_down_.load()) break;
             std::this_thread::yield();
         }
         thread_spinning_[thread_index].store(false, std::memory_order_release);
+        if (queue.GetSizeApproximate() || is_shutting_down_.load()) continue;
 
-        if (queue.GetSizeApproximate() > 0 ||
-            is_shutting_down_.load(std::memory_order_acquire)) {
-            continue;
-        }
-        
-        // Mark thread as sleeping
         thread_sleep_start_time_[thread_index].store(
-            std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
-    
-        int ready = epoll_wait(epoll_fd, events, kMaxEvents, -1);
+        std::chrono::steady_clock::now().time_since_epoch().count(),
+        std::memory_order_release);
+        int n = epoll_wait(epfd, events, kMaxEvents, -1);
+
         thread_sleep_start_time_[thread_index].store(0, std::memory_order_release);
-        
-        if (is_shutting_down_.load(std::memory_order_acquire)) break;
-        
-        if (ready < 0) {
+
+        if (n < 0) {
             if (errno == EINTR) continue;
             LOG_ERROR() << "epoll_wait failed: " << strerror(errno);
             break;
         }
-        
-        // Process events returned by epoll.
-        for (int i = 0; i < ready && !is_shutting_down_.load(std::memory_order_acquire); ++i) {
-            const auto fd = events[i].data.fd;
 
-            if ((events[i].events & (EPOLLERR | EPOLLHUP)) && fd >= 0) {
-                std::lock_guard<std::mutex> lock(fd_mutex_);
+        for (int i = 0; i < n && !is_shutting_down_.load(); ++i) {
+            int fd = events[i].data.fd;
+            uint32_t ev = events[i].events;
+
+            if (fd == thread_notify_fds_[thread_index]) {
+                uint64_t cnt;
+                while (read(fd, &cnt, sizeof(cnt)) == sizeof(cnt)) {}
+                continue;
+            }
+
+            if (ev & (EPOLLERR | EPOLLHUP)) {
+                std::lock_guard lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
                 if (it != fd_callbacks_.end()) {
-                    auto callback = it->second.callback;
-                    if (callback) {
-                        try {
-                            callback(events[i].events);
-                        } catch (const std::exception& ex) {
-                            LOG_ERROR() << "Exception in fd error callback: " << ex.what();
-                        }
-                    }
-                }
-            }
-            
-            if (fd == thread_notify_fds_[thread_index]) {
-                // Thread notification - drain the eventfd completely
-                uint64_t buffer;
-                while (true) {
-                    ssize_t ret = read(thread_notify_fds_[thread_index], &buffer, sizeof(buffer));
-                    if (ret < 0) {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            LOG_ERROR() << "Failed to read from thread notification fd: " << strerror(errno);
-                        }
-                        break;
-                    }
+                    it->second.callback(ev);
                 }
                 continue;
             }
-            
-            // Handle other fd events (I/O, etc.)
-            FdCallbackInfo callback_info;
-            std::size_t correct_thread_index = thread_index;
-            bool forward_to_other_thread = false;
+
+            FdCallbackInfo info;
+            bool forward = false;
             {
-                std::lock_guard<std::mutex> lock(fd_mutex_);
+                std::lock_guard lock(fd_mutex_);
                 auto it = fd_callbacks_.find(fd);
                 if (it != fd_callbacks_.end()) {
                     if (it->second.owner_thread == thread_index) {
-                        callback_info = it->second;
+                        info = it->second;
                     } else {
-                        // Event delivered to wrong thread, forward to correct thread
-                        correct_thread_index = it->second.owner_thread;
-                        forward_to_other_thread = true;
+                        forward = true;
                     }
                 }
             }
-
-            if (forward_to_other_thread) {
-                // Wake up the correct thread to handle this event
-                if (correct_thread_index < thread_count_) {
-                    PostEvent(correct_thread_index);
-                }
+            if (forward) {
+                PostEvent(info.owner_thread);
                 continue;
             }
-            
-            if (callback_info.callback) {
-                uint32_t event_mask = events[i].events & (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP);
-                if (event_mask) {
-                    bool should_call = true;
-                    int fd_to_unregister = -1;
-                    {
-                        std::lock_guard<std::mutex> registry_lock(registry_mutex_);
-                        auto owner_it = fd_to_owner_.find(fd);
-                        if (owner_it != fd_to_owner_.end() && owner_it->second.expired()) {
-                            should_call = false;
-                            fd_to_unregister = fd;
-                        }
-                    }
-
-                    if (fd_to_unregister >= 0) {
-                        LOG_DEBUG() << "Owner of fd " << fd_to_unregister << " expired, removing fd from epoll";
-                        UnregisterFd(fd_to_unregister);
-                    }
-                    
-                    if (should_call) {
-                        try {
-                            callback_info.callback(event_mask);
-                        } catch (const std::exception& ex) {
-                            LOG_ERROR() << "Exception in fd callback: " << ex.what();
-                        } catch (...) {
-                            LOG_ERROR() << "Unknown exception in fd callback";
-                        }
-                    }
-                }
-            } else if (fd >= 0) {
-                // We received an event for a file descriptor with no registered callback
-                // This can happen if the fd was just unregistered - remove it from epoll
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-                LOG_DEBUG() << "Removed orphaned fd " << fd << " from epoll";
+            if (info.callback) {
+            info.callback(ev & (EPOLLIN|EPOLLOUT));
             }
         }
     }
